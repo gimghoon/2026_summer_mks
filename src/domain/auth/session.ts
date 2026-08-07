@@ -21,12 +21,12 @@ export class InvalidPasswordError extends Error {
   }
 }
 
-function signingKey(): string {
-  const key = getEnv().SESSION_SIGNING_KEY;
-  if (!key) {
+function signingKey(): Buffer {
+  const encodedKey = getEnv().SESSION_SIGNING_KEY;
+  if (!encodedKey) {
     throw new Error("SESSION_SIGNING_KEY is required");
   }
-  return key;
+  return Buffer.from(encodedKey, "base64");
 }
 
 function sign(value: string): string {

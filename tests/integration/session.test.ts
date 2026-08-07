@@ -9,6 +9,7 @@ import { POST } from "@/app/api/session/route";
 
 const databaseUrl = "postgresql://postgres:postgres@localhost:5432/private_reply_assistant";
 const password = "local-test-password";
+const sessionSigningKey = Buffer.alloc(32, 13).toString("base64");
 let passwordHash: string;
 
 function cookieHeader(setCookie: string): string {
@@ -24,7 +25,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-08-07T00:00:00.000Z"));
   vi.stubEnv("DATABASE_URL", databaseUrl);
   vi.stubEnv("APP_PASSWORD_HASH", passwordHash);
-  vi.stubEnv("SESSION_SIGNING_KEY", "session-test-signing-key-with-sufficient-entropy");
+  vi.stubEnv("SESSION_SIGNING_KEY", sessionSigningKey);
 });
 
 afterEach(() => {
@@ -46,6 +47,14 @@ test("creates a hardened 12-hour cookie for a valid password", async () => {
 test("rejects an invalid password without issuing a session", async () => {
   await expect(createSessionCookie("incorrect-password")).rejects.toBeInstanceOf(
     InvalidPasswordError,
+  );
+});
+
+test("rejects a signing key shorter than 32 decoded bytes", async () => {
+  vi.stubEnv("SESSION_SIGNING_KEY", Buffer.alloc(31, 13).toString("base64"));
+
+  await expect(createSessionCookie(password)).rejects.toThrow(
+    "SESSION_SIGNING_KEY must be canonical base64 encoding exactly 32 bytes",
   );
 });
 
