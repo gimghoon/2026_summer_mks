@@ -1,3 +1,6 @@
 .superpowers/
 .DS_Store
 .worktrees/
+/node_modules/
+/.next/
+*.tsbuildinfo
