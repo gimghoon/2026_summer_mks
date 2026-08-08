@@ -6,10 +6,13 @@ import type {
 } from "@/domain/replies/reply-service";
 
 const factPolarity = [
-  { positive: /좋아(?:해|한다|해요)?/u, negative: /싫어(?:해|한다|해요)?|좋아하지s*않/u },
+  {
+    positive: /좋아(?:해|한다|해요)?/u,
+    negative: /싫어(?:해|한다|해요)?|안\s*좋아(?:해|한다|해요)?|좋아하지\s*않/u,
+  },
   { positive: /있(?:어|다|어요)/u, negative: /없(?:어|다|어요)/u },
-  { positive: /가능(?:해|하다|합니다)?/u, negative: /불가능|어려워|가능하지s*않/u },
-  { positive: /원해|원한다/u, negative: /원하지s*않/u },
+  { positive: /가능(?:해|하다|합니다)?/u, negative: /불가능|어려워|가능하지\s*않/u },
+  { positive: /원해|원한다/u, negative: /원하지\s*않/u },
 ] as const;
 
 const ignoredFactTerms = new Set([
@@ -39,25 +42,22 @@ function hasFactAnchor(left: string, right: string): boolean {
 
 function knownFactTexts(context: ReplyGenerationContext): string[] {
   return [
+    // `currentFacts` is populated only from reviewed structured profile facts
+    // by the production adapter. Raw conversation remains model context, not
+    // an authority capable of invalidating a generated reply.
     ...(context.currentFacts ?? []),
     ...context.participantProfiles.flatMap((profile) => [
       profile.value,
       ...(profile.conditions ?? []),
       ...(profile.exceptions ?? []),
     ]),
-    ...(context.roomMemory ? [context.roomMemory] : []),
-    ...context.currentContext.turns.flatMap((turn) => turn.messages.map((message) => message.text)),
-    ...context.retrievedChunks.flatMap((chunk) => [
-      chunk.summary,
-      ...chunk.turns.flatMap((turn) => turn.messages.map((message) => message.text)),
-    ]),
   ];
 }
 
 /**
- * Guards simple, explicit polarity conflicts against reviewed profile facts and
- * decrypted room context. It returns only a boolean so retry metadata remains
- * the opaque FACT_CONTRADICTION rule ID.
+ * Guards simple, explicit polarity conflicts against reviewed structured
+ * participant/profile facts. It returns only a boolean so retry metadata
+ * remains the opaque FACT_CONTRADICTION rule ID.
  */
 export function validatesReplyFact(candidate: ReplyCandidate, context: ReplyGenerationContext): boolean {
   const candidatePolarity = polarity(candidate.text);

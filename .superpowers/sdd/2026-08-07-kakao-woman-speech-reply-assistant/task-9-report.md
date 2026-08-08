@@ -28,6 +28,22 @@ Implemented and verified in the assigned worktree.
 | `node node_modules/vitest/vitest.mjs run` | Passed: 19 files, 123 tests. |
 | `git diff --check` | Passed with no whitespace errors. |
 
+## Fix Round 2: Fact Authority and Korean Negation
+
+- Corrected the polarity expressions to use regex whitespace escapes and recognize Korean negation forms including `안 좋아해`, `좋아하지 않아`, `가능하지 않아`, and `원하지 않아`.
+- Restricted contradiction authority to `currentFacts` and structured participant/profile facts. The production adapter populates those only from reviewed profile records. Room memory, pasted conversation, user situation/intent, selected raw turns, and retrieved raw history remain in the model prompt but cannot independently invalidate a candidate.
+- Expanded production-policy regressions to cover both directions of every supported polarity family: likes/dislikes, availability, possibility, and preference. The suite also proves that a raw `오늘 시간 있어?` message does not reject the context-grounded reply `오늘은 시간이 없어`.
+
+### Fix round verification
+
+| Command | Outcome |
+| --- | --- |
+| `node node_modules/vitest/vitest.mjs run tests/integration/reply-production-policy.test.ts tests/integration/reply-service.test.ts tests/integration/replies-route.test.ts` | Passed: 3 files, 34 tests. |
+| `node node_modules/typescript/bin/tsc --noEmit` | Passed. |
+| `node node_modules/vitest/vitest.mjs run` | Passed: 20 files, 138 tests. |
+| `node node_modules/next/dist/bin/next build` | Passed. |
+| `git diff --check` | Passed with no whitespace errors. |
+
 ## Self-review
 
 - Authentication precedes body parsing and all room lookups.

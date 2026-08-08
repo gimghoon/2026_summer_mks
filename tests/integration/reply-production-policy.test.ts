@@ -88,7 +88,7 @@ test("production fact validator rejects a reply that contradicts a reviewed prof
   )).toBe(true);
 });
 
-test("production fact validator also uses current decrypted conversation context", () => {
+test("production fact validator accepts a context-grounded reply when raw conversation is not a reviewed fact", () => {
   const context: ReplyGenerationContext = {
     ...baseContext,
     participantProfiles: [],
@@ -98,7 +98,7 @@ test("production fact validator also uses current decrypted conversation context
         id: "turn-1",
         speakerId: "participant-1",
         startedAt: new Date("2026-08-08T00:00:00.000Z"),
-        messages: [{ kind: "text", text: "민지는 커피를 좋아해" }],
+        messages: [{ kind: "text", text: "오늘 시간 있어?" }],
       }],
       usedTurnLimit: "full_chunk",
       needsUserQuestion: false,
@@ -106,7 +106,31 @@ test("production fact validator also uses current decrypted conversation context
   };
 
   expect(validatesReplyFact(
-    { strategy: "relationship_soft", text: "민지는 커피를 싫어해", intentLabel: "사실 확인", riskLabel: null },
+    { strategy: "relationship_soft", text: "오늘은 시간이 없어", intentLabel: "일정 전달", riskLabel: null },
+    context,
+  )).toBe(true);
+});
+
+test.each([
+  ["좋아함", "민지는 커피를 좋아해", "민지는 커피를 싫어해"],
+  ["안 좋아함", "민지는 커피를 좋아해", "민지는 커피를 안 좋아해"],
+  ["좋아하지 않음", "민지는 커피를 좋아해", "민지는 커피를 좋아하지 않아"],
+  ["있음", "민지는 오늘 시간이 있어", "민지는 오늘 시간이 없어"],
+  ["가능", "민지는 지금 가능해", "민지는 지금 불가능해"],
+  ["원함", "민지는 여행을 원해", "민지는 여행을 원하지 않아"],
+  ["좋아하지 않음-to-좋아함", "민지는 커피를 안 좋아해", "민지는 커피를 좋아해"],
+  ["없음-to-있음", "민지는 오늘 시간이 없어", "민지는 오늘 시간이 있어"],
+  ["불가능-to-가능", "민지는 지금 불가능해", "민지는 지금 가능해"],
+  ["원하지 않음-to-원함", "민지는 여행을 원하지 않아", "민지는 여행을 원해"],
+])("production fact validator rejects %s polarity conflicts", (_label, reviewedFact, candidateText) => {
+  const context: ReplyGenerationContext = {
+    ...baseContext,
+    participantProfiles: [{ kind: "reviewed_fact", value: reviewedFact }],
+    currentFacts: [reviewedFact],
+  };
+
+  expect(validatesReplyFact(
+    { strategy: "relationship_soft", text: candidateText, intentLabel: "사실 확인", riskLabel: null },
     context,
   )).toBe(false);
 });
