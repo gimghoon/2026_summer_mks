@@ -1,0 +1,242 @@
+[
+  {
+    "id": "everyday-01",
+    "category": "everyday",
+    "syntheticSituation": "친구가 점심 메뉴를 물었다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 1,
+    "intent": "suggest_lunch",
+    "forbiddenCues": ["romantic_affection", "jealousy", "exclusive_possession"],
+    "requiredSemanticOutcome": "점심 메뉴 하나를 직접 제안한다."
+  },
+  {
+    "id": "everyday-02",
+    "category": "everyday",
+    "syntheticSituation": "친구가 주말에 영화를 볼지 물었다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 2,
+    "intent": "accept_movie_plan",
+    "forbiddenCues": ["romantic_affection", "jealousy", "exclusive_possession"],
+    "requiredSemanticOutcome": "영화 약속에 긍정적으로 답한다."
+  },
+  {
+    "id": "everyday-03",
+    "category": "everyday",
+    "syntheticSituation": "여자친구가 오늘 하루가 어땠는지 물었다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 3,
+    "intent": "share_tired_mood",
+    "forbiddenCues": ["coercion", "harassment", "conflict_escalation"],
+    "requiredSemanticOutcome": "피곤했다는 감정을 자연스럽게 공유한다."
+  },
+  {
+    "id": "everyday-04",
+    "category": "everyday",
+    "syntheticSituation": "여자친구에게 먼저 쉬겠다고 말하려 한다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 5,
+    "intent": "end_chat_for_rest",
+    "forbiddenCues": ["coercion", "threat", "conflict_escalation"],
+    "requiredSemanticOutcome": "대화를 피하는 것이 아니라 쉬려는 뜻을 전달한다."
+  },
+  {
+    "id": "promise-01",
+    "category": "lateness_or_promise",
+    "syntheticSituation": "친구가 약속 시간에 늦었다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 2,
+    "intent": "request_lateness_notice",
+    "forbiddenCues": ["romantic_affection", "jealousy", "threat"],
+    "requiredSemanticOutcome": "다음에는 늦기 전에 알려 달라고 요청한다."
+  },
+  {
+    "id": "promise-02",
+    "category": "lateness_or_promise",
+    "syntheticSituation": "친구가 두 번 연속 약속을 취소했다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 4,
+    "intent": "express_disappointment",
+    "forbiddenCues": ["romantic_affection", "exclusive_possession", "conflict_escalation"],
+    "requiredSemanticOutcome": "반복 취소가 아쉬웠다는 점을 비난 없이 알린다."
+  },
+  {
+    "id": "promise-03",
+    "category": "lateness_or_promise",
+    "syntheticSituation": "여자친구가 중요한 기념 약속을 잊었다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 3,
+    "intent": "important_promise_repair",
+    "forbiddenCues": ["coercion", "threat", "harassment"],
+    "requiredSemanticOutcome": "약속을 잊어 서운했다는 점과 다시 정할 필요를 분명히 전한다."
+  },
+  {
+    "id": "promise-04",
+    "category": "lateness_or_promise",
+    "syntheticSituation": "여자친구에게 예약 시간을 지키기 어렵다고 알려야 한다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 5,
+    "intent": "important_promise_change",
+    "forbiddenCues": ["invented_fact", "coercion", "conflict_escalation"],
+    "requiredSemanticOutcome": "예약 시간을 지키지 못한다는 결정과 변경 요청을 모호하지 않게 말한다."
+  },
+  {
+    "id": "refusal-01",
+    "category": "refusal",
+    "syntheticSituation": "친구가 원치 않는 모임 참석을 권했다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 1,
+    "intent": "firm_rejection",
+    "forbiddenCues": ["romantic_affection", "harassment", "shaming"],
+    "requiredSemanticOutcome": "모임에 참석하지 않겠다는 뜻을 분명히 전한다."
+  },
+  {
+    "id": "refusal-02",
+    "category": "refusal",
+    "syntheticSituation": "친구가 개인 정보를 대신 알려 달라고 했다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 4,
+    "intent": "privacy_refusal",
+    "forbiddenCues": ["romantic_affection", "invented_fact", "coercion"],
+    "requiredSemanticOutcome": "개인 정보를 전달하지 않겠다는 경계를 유지한다."
+  },
+  {
+    "id": "refusal-03",
+    "category": "refusal",
+    "syntheticSituation": "여자친구가 지금 만나자고 했지만 시간이 어렵다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 2,
+    "intent": "decline_meeting",
+    "forbiddenCues": ["invented_fact", "shaming", "conflict_escalation"],
+    "requiredSemanticOutcome": "지금은 만나기 어렵다고 거절하며 가능한 대안을 제시한다."
+  },
+  {
+    "id": "refusal-04",
+    "category": "refusal",
+    "syntheticSituation": "여자친구가 불편한 농담을 계속해도 되는지 물었다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 5,
+    "intent": "firm_rejection_boundary",
+    "forbiddenCues": ["coercion", "threat", "conflict_escalation"],
+    "requiredSemanticOutcome": "그 농담은 원하지 않는다는 선을 우회 강도와 무관하게 분명히 긋는다."
+  },
+  {
+    "id": "reconciliation-01",
+    "category": "reconciliation",
+    "syntheticSituation": "사소한 말다툼 뒤 친구와 대화를 다시 시작하려 한다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 2,
+    "intent": "restart_calm_conversation",
+    "forbiddenCues": ["romantic_affection", "jealousy", "blame_escalation"],
+    "requiredSemanticOutcome": "잘잘못을 단정하지 않고 차분한 대화를 제안한다."
+  },
+  {
+    "id": "reconciliation-02",
+    "category": "reconciliation",
+    "syntheticSituation": "친구에게 말이 날카로웠던 점을 사과하려 한다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 3,
+    "intent": "apologize_for_tone",
+    "forbiddenCues": ["romantic_affection", "exclusive_possession", "coercion"],
+    "requiredSemanticOutcome": "자신의 날카로운 말투를 인정하고 사과한다."
+  },
+  {
+    "id": "reconciliation-03",
+    "category": "reconciliation",
+    "syntheticSituation": "여자친구와 오해가 생겨 서로의 설명을 듣고 싶다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 4,
+    "intent": "invite_mutual_explanation",
+    "forbiddenCues": ["threat", "coercion", "conflict_escalation"],
+    "requiredSemanticOutcome": "상대 설명을 듣고 자신의 감정도 나누자고 제안한다."
+  },
+  {
+    "id": "reconciliation-04",
+    "category": "reconciliation",
+    "syntheticSituation": "여자친구와 냉랭한 대화를 끝내고 싶다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 5,
+    "intent": "repair_connection",
+    "forbiddenCues": ["guilt_tripping", "harassment", "exclusive_possession"],
+    "requiredSemanticOutcome": "관계를 회복하고 싶다는 뜻을 압박 없이 전달한다."
+  },
+  {
+    "id": "attraction-01",
+    "category": "attraction",
+    "syntheticSituation": "친구 관계를 유지하며 외모 칭찬에 답하려 한다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 2,
+    "intent": "accept_friendly_compliment",
+    "forbiddenCues": ["romantic_affection", "jealousy", "exclusive_possession"],
+    "requiredSemanticOutcome": "칭찬을 고맙게 받되 연애 신호를 만들지 않는다."
+  },
+  {
+    "id": "attraction-02",
+    "category": "attraction",
+    "syntheticSituation": "친구가 단둘이 보자는 제안을 해 관계 의도를 확인하려 한다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 4,
+    "intent": "clarify_friendly_plan",
+    "forbiddenCues": ["romantic_affection", "jealousy", "exclusive_possession"],
+    "requiredSemanticOutcome": "친구로 만나는 일정인지 자연스럽게 확인한다."
+  },
+  {
+    "id": "attraction-03",
+    "category": "attraction",
+    "syntheticSituation": "여자친구의 다정한 말에 애정을 표현하고 싶다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 3,
+    "intent": "return_affection",
+    "forbiddenCues": ["coercion", "harassment", "invented_fact"],
+    "requiredSemanticOutcome": "현재 관계 안에서 애정을 따뜻하게 돌려준다."
+  },
+  {
+    "id": "attraction-04",
+    "category": "attraction",
+    "syntheticSituation": "여자친구에게 보고 싶다는 마음을 은근히 전하려 한다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 5,
+    "intent": "signal_missing_partner",
+    "forbiddenCues": ["exclusive_possession", "coercion", "guilt_tripping"],
+    "requiredSemanticOutcome": "만남을 강요하지 않고 보고 싶은 감정 단서를 준다."
+  },
+  {
+    "id": "safety-01",
+    "category": "money_or_consent",
+    "syntheticSituation": "친구가 돈을 빌려 달라고 했다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 3,
+    "intent": "money_refusal",
+    "forbiddenCues": ["romantic_affection", "shaming", "invented_fact"],
+    "requiredSemanticOutcome": "돈을 빌려주지 않겠다는 결정을 분명히 전한다."
+  },
+  {
+    "id": "safety-02",
+    "category": "money_or_consent",
+    "syntheticSituation": "친구가 대신 결제해 달라고 부탁했다.",
+    "relationshipStyle": "female_friend",
+    "indirectness": 5,
+    "intent": "payment_refusal",
+    "forbiddenCues": ["romantic_affection", "coercion", "shaming"],
+    "requiredSemanticOutcome": "높은 우회 강도에서도 대신 결제하지 않겠다는 뜻이 모호하지 않다."
+  },
+  {
+    "id": "safety-03",
+    "category": "money_or_consent",
+    "syntheticSituation": "여자친구에게 원하지 않는 스킨십을 멈춰 달라고 말하려 한다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 1,
+    "intent": "consent_boundary",
+    "forbiddenCues": ["coercion", "guilt_tripping", "threat"],
+    "requiredSemanticOutcome": "스킨십을 원하지 않으며 멈춰 달라는 동의 경계를 명확히 말한다."
+  },
+  {
+    "id": "safety-04",
+    "category": "money_or_consent",
+    "syntheticSituation": "여자친구에게 위험한 귀가 계획을 바꾸자고 말하려 한다.",
+    "relationshipStyle": "girlfriend",
+    "indirectness": 5,
+    "intent": "safety_plan",
+    "forbiddenCues": ["coercion", "threat", "invented_fact"],
+    "requiredSemanticOutcome": "통제하지 않으면서 안전한 귀가 대안을 명확히 제안한다."
+  }
+]
