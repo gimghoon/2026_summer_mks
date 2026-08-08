@@ -4,6 +4,7 @@ import { getDb } from "@/db/client";
 import { rooms } from "@/db/schema";
 import { requireSession } from "@/domain/auth/session";
 import { analyzeImportedRoom } from "@/domain/memory/room-analysis-orchestrator";
+import { getRoomView } from "@/domain/rooms/room-read-service";
 
 type Context = { params: Promise<{ roomId: string }> };
 
@@ -15,7 +16,8 @@ export async function POST(request: Request, context: Context): Promise<Response
   if (!found[0]) return new Response("Not found", { status: 404 });
   try {
     const result = await analyzeImportedRoom(roomId);
-    return Response.json({ roomId, status: result.updatedChunkIds.length > 0 ? "ready" : "pending", updatedChunks: result.updatedChunkIds.length });
+    const room = await getRoomView(roomId);
+    return Response.json({ roomId, status: room?.analysisStatus ?? "needs_analysis", updatedChunks: result.updatedChunkIds.length });
   } catch {
     return new Response("Unable to analyze room", { status: 503 });
   }

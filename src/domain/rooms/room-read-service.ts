@@ -20,9 +20,9 @@ export async function listRoomViews(): Promise<RoomView[]> {
   if (!roomRows.length) return [];
   const participantRows = await database.select({ id: participants.id, roomId: participants.roomId, encryptedName: participants.encryptedName, isSelf: participants.isSelf, relationshipStyle: participants.relationshipStyle }).from(participants);
   const memoryRows = await database.select({ roomId: roomMemories.roomId }).from(roomMemories);
-  const chunkRows = await database.select({ roomId: chunks.roomId }).from(chunks);
-  const ready = new Set(memoryRows.map((row) => row.roomId)); const hasChunks = new Set(chunkRows.map((row) => row.roomId));
-  return roomRows.map((room) => readableRoom(room, participantRows.filter((participant) => participant.roomId === room.id).map((participant) => ({ id: participant.id, name: decryptJson<string>(participant.encryptedName), isSelf: participant.isSelf, relationshipStyle: participant.relationshipStyle })), ready.has(room.id) && hasChunks.has(room.id) ? "ready" : "needs_analysis"));
+  const chunkRows = await database.select({ roomId: chunks.roomId, encryptedSummary: chunks.encryptedSummary }).from(chunks);
+  const ready = new Set(memoryRows.map((row) => row.roomId)); const byRoom = Map.groupBy(chunkRows, (row) => row.roomId);
+  return roomRows.map((room) => { const roomChunks = byRoom.get(room.id) ?? []; const complete = roomChunks.length > 0 && roomChunks.every((chunk) => { const payload = decryptJson<{ analysisComplete?: boolean } | string>(chunk.encryptedSummary); return typeof payload !== "string" && payload.analysisComplete === true; }); return readableRoom(room, participantRows.filter((participant) => participant.roomId === room.id).map((participant) => ({ id: participant.id, name: decryptJson<string>(participant.encryptedName), isSelf: participant.isSelf, relationshipStyle: participant.relationshipStyle })), ready.has(room.id) && complete ? "ready" : "needs_analysis"); });
 }
 
 export async function getRoomView(roomId: string): Promise<RoomView | null> {
@@ -33,7 +33,8 @@ export async function getRoomView(roomId: string): Promise<RoomView | null> {
   const [participantRows, memoryRows, chunkRows] = await Promise.all([
     database.select({ id: participants.id, encryptedName: participants.encryptedName, isSelf: participants.isSelf, relationshipStyle: participants.relationshipStyle }).from(participants).where(eq(participants.roomId, roomId)),
     database.select({ roomId: roomMemories.roomId }).from(roomMemories).where(eq(roomMemories.roomId, roomId)),
-    database.select({ roomId: chunks.roomId }).from(chunks).where(eq(chunks.roomId, roomId)),
+    database.select({ roomId: chunks.roomId, encryptedSummary: chunks.encryptedSummary }).from(chunks).where(eq(chunks.roomId, roomId)),
   ]);
-  return readableRoom(room, participantRows.map((participant) => ({ id: participant.id, name: decryptJson<string>(participant.encryptedName), isSelf: participant.isSelf, relationshipStyle: participant.relationshipStyle })), memoryRows.length > 0 && chunkRows.length > 0 ? "ready" : "needs_analysis");
+  const complete = chunkRows.length > 0 && chunkRows.every((chunk) => { const payload = decryptJson<{ analysisComplete?: boolean } | string>(chunk.encryptedSummary); return typeof payload !== "string" && payload.analysisComplete === true; });
+  return readableRoom(room, participantRows.map((participant) => ({ id: participant.id, name: decryptJson<string>(participant.encryptedName), isSelf: participant.isSelf, relationshipStyle: participant.relationshipStyle })), memoryRows.length > 0 && complete ? "ready" : "needs_analysis");
 }

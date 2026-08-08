@@ -36,3 +36,15 @@ test("sends the selected relationship as a per-request generation rule", async (
   expect(fetch).toHaveBeenCalledWith("/api/replies", expect.objectContaining({ body: expect.stringContaining('"relationship":"girlfriend"') }));
   vi.unstubAllGlobals();
 });
+
+test("sends the saved browser intensity even without a one-request override", async () => {
+  window.localStorage.setItem("reply-default-indirectness", "4");
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ candidates: [
+    { strategy: "relationship_soft", text: "a", intentLabel: "a", riskLabel: null }, { strategy: "emotion_signal", text: "b", intentLabel: "b", riskLabel: null }, { strategy: "clearer_request", text: "c", intentLabel: "c", riskLabel: null },
+  ] }) }));
+  render(<ReplyComposer roomId="r1" participantId="p1" />);
+  fireEvent.change(screen.getByLabelText("최근 대화"), { target: { value: "대화" } }); fireEvent.change(screen.getByLabelText("현재 상황"), { target: { value: "상황" } }); fireEvent.click(screen.getByRole("button", { name: "답장 3개 만들기" }));
+  await screen.findAllByTestId("reply-candidate");
+  expect(fetch).toHaveBeenCalledWith("/api/replies", expect.objectContaining({ body: expect.stringContaining('"indirectness":4') }));
+  vi.unstubAllGlobals(); window.localStorage.clear();
+});

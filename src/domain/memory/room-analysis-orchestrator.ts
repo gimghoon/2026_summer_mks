@@ -1,22 +1,26 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/db/client";
 import { chunks, turns } from "@/db/schema";
 import { encryptJson } from "@/domain/crypto/encrypted-json";
 import { chunkTurns } from "./chunker";
-import { extractRoomMemory } from "./extractor";
+import { createDrizzleMemoryRepository, extractRoomMemory } from "./extractor";
+import { createDrizzleProfileRepository } from "@/domain/profiles/profile-service";
+import { OpenAIModelGateway } from "@/domain/models/openai-gateway";
 
 const EMPTY_VECTOR = Array<number>(1536).fill(0);
 
 /** Builds deterministic time chunks once, then retries only incomplete extraction work. */
 export async function analyzeImportedRoom(roomId: string) {
   const database = getDb();
-  const existing = await database.select({ id: chunks.id }).from(chunks).where(eq(chunks.roomId, roomId));
+  return database.transaction(async (transaction) => {
+  await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${roomId}))`);
+  const existing = await transaction.select({ id: chunks.id }).from(chunks).where(eq(chunks.roomId, roomId));
   if (existing.length === 0) {
-    const storedTurns = await database.select({ id: turns.id, startedAt: turns.startedAt, endedAt: turns.endedAt })
+    const storedTurns = await transaction.select({ id: turns.id, startedAt: turns.startedAt, endedAt: turns.endedAt })
       .from(turns).where(eq(turns.roomId, roomId)).orderBy(asc(turns.startedAt));
     const planned = chunkTurns(storedTurns.map((turn) => ({ speaker: "", startedAt: turn.startedAt, endedAt: turn.endedAt, messages: [] })), []);
-    if (planned.length) await database.insert(chunks).values(planned.map((chunk) => ({
+    if (planned.length) await transaction.insert(chunks).values(planned.map((chunk) => ({
       roomId,
       startTurnId: storedTurns[chunk.startTurnIndex]!.id,
       endTurnId: storedTurns[chunk.endTurnIndex]!.id,
@@ -28,5 +32,10 @@ export async function analyzeImportedRoom(roomId: string) {
       embedding: EMPTY_VECTOR,
     })));
   }
-  return extractRoomMemory(roomId);
+  return extractRoomMemory(roomId, {
+    repository: createDrizzleMemoryRepository(transaction),
+    profileRepository: createDrizzleProfileRepository(transaction),
+    gateway: new OpenAIModelGateway(),
+  });
+  });
 }

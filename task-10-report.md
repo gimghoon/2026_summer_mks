@@ -27,3 +27,10 @@ Tasks 4/6/9 did not expose a room-list or participant-list endpoint, and an impo
 - Importing now pauses to display unparsed lines. The authenticated analysis hook creates deterministic, idempotent time chunks before calling `extractRoomMemory`; incomplete extraction remains retryable. Room cards report ready only when persisted chunks and room memory are present.
 - `/settings` stores the browser-local default indirectness (clearly labelled), and `/profiles` provides a named profile directory.
 - Profile Server Components and every profile GET/edit/correction request enforce the room–participant relationship before reading or changing facts.
+
+## Fix round 2
+
+- Profile-originated reply links preserve the stored relationship style. The request always carries its effective indirectness.
+- Unparsed import lines are retained only in `sessionStorage`, keyed by room ID, so a reload can resume the private review without server logging.
+- Room actions now follow the persisted analysis state. Ready requires a room memory and every encrypted chunk to decrypt as complete; pending rooms offer a disabled workflow and retry action.
+- Analysis uses a per-room PostgreSQL transaction advisory lock while ensuring chunks and extracting memory with transaction-scoped repositories, preventing duplicate chunks across concurrent requests.
