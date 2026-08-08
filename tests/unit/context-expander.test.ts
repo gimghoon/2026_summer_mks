@@ -59,3 +59,31 @@ test("uses deterministic ambiguity checks before the model and asks one Korean q
   expect(result.question).toMatch(/[가-힣]/);
   expect(result.question).toMatch(/어떤 사람이나 일/);
 });
+
+test.each(["걔는", "그거야", "그것을"])("expands for the inflected unresolved reference %s", async (reference) => {
+  const judge = vi.fn().mockResolvedValue({ sufficient: true, ambiguityReasons: [] });
+  const turns = makeTurns(20);
+  turns[10] = {
+    ...turns[10]!,
+    messages: [{ kind: "text", text: `${reference} 어떻게 할까` }],
+  };
+
+  const result = await selectCurrentContext({ turns, judge, fullChunkStart: 0 });
+
+  expect(judge).not.toHaveBeenCalled();
+  expect(result).toMatchObject({ usedTurnLimit: "full_chunk", needsUserQuestion: true });
+});
+
+test("does not treat an arbitrary 그-prefix word as an unresolved reference", async () => {
+  const judge = vi.fn().mockResolvedValue({ sufficient: true, ambiguityReasons: [] });
+  const turns = makeTurns(20);
+  turns[10] = {
+    ...turns[10]!,
+    messages: [{ kind: "text", text: "그래서 오늘 저녁에 같이 영화 보러 가자" }],
+  };
+
+  const result = await selectCurrentContext({ turns, judge, fullChunkStart: 0 });
+
+  expect(judge).toHaveBeenCalledOnce();
+  expect(result).toMatchObject({ usedTurnLimit: 20, needsUserQuestion: false });
+});

@@ -27,9 +27,23 @@ export type ContextExpansionInput = {
   judge: (turns: DecryptedTurn[]) => Promise<ContextSufficiency>;
 };
 
-const unresolvedReferences = new Set([
+const unresolvedReferenceStems = [
   "그", "그거", "그것", "그사람", "그분", "걔", "그때", "그일", "그얘기", "저거", "저것", "이거", "이것",
+] as const;
+
+// Match only common particles and copula endings after known reference stems.
+// This deliberately does not turn arbitrary 그-prefix words (for example, 그래서)
+// into ambiguous references.
+const referenceSuffixes = new Set([
+  "", "은", "는", "이", "가", "을", "를", "에", "에게", "한테", "에서", "으로", "로", "도", "만", "와", "과", "의",
+  "야", "이다", "이야", "예요", "이에요", "인가", "일까", "였어", "였나",
 ]);
+
+function isUnresolvedReferenceToken(token: string): boolean {
+  return unresolvedReferenceStems.some((stem) => (
+    token.startsWith(stem) && referenceSuffixes.has(token.slice(stem.length))
+  ));
+}
 
 function lexicalTokens(turns: DecryptedTurn[]): string[] {
   return turns.flatMap((turn) => turn.messages)
@@ -48,7 +62,7 @@ function hasUnresolvedReference(turns: DecryptedTurn[]): boolean {
   return turns.some((turn) => turn.messages.some((message) => {
     if (message.kind !== "text") return false;
     const tokens = message.text.match(/[가-힣A-Za-z0-9]+/g) ?? [];
-    return tokens.some((token) => unresolvedReferences.has(token));
+    return tokens.some(isUnresolvedReferenceToken);
   }));
 }
 
