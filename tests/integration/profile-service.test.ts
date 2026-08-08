@@ -27,7 +27,19 @@ class InMemoryProfileRepository implements ProfileRepository {
   private revisionSequence = 0;
 
   async transaction<T>(work: (repository: ProfileRepository) => Promise<T>): Promise<T> {
-    return work(this);
+    const factSnapshot = this.facts.map((fact) => ({ ...fact }));
+    const revisionSnapshot = this.revisions.map((revision) => ({ ...revision }));
+    const factSequence = this.factSequence;
+    const revisionSequence = this.revisionSequence;
+    try {
+      return await work(this);
+    } catch (error) {
+      this.facts.splice(0, this.facts.length, ...factSnapshot);
+      this.revisions.splice(0, this.revisions.length, ...revisionSnapshot);
+      this.factSequence = factSequence;
+      this.revisionSequence = revisionSequence;
+      throw error;
+    }
   }
 
   async listFacts(participantId: string): Promise<StoredProfileFact[]> {
@@ -71,8 +83,12 @@ class InMemoryProfileRepository implements ProfileRepository {
     revision.source = source;
   }
 
-  async cleanupAiAnalysis(analysisKeys: string[]): Promise<void> {
+  async cleanupAiAnalysis(
+    analysisKeys: string[],
+    legacyEvidenceTurnIds: string[] = [],
+  ): Promise<void> {
     const keys = new Set(analysisKeys);
+    const legacyEvidence = new Set(legacyEvidenceTurnIds);
     for (let index = this.revisions.length - 1; index >= 0; index -= 1) {
       const revision = this.revisions[index]!;
       const decoded = decryptJson<unknown>(revision.encryptedNextValue);
@@ -80,11 +96,19 @@ class InMemoryProfileRepository implements ProfileRepository {
         && "analysisKey" in decoded && typeof decoded.analysisKey === "string"
         ? decoded.analysisKey
         : null;
-      if (
-        analysisKey
-        && keys.has(analysisKey)
-        && (revision.source === "ai_inference" || revision.source === "ai_change_proposal")
-      ) {
+      const evidenceTurnIds = typeof decoded === "object" && decoded !== null
+        && "evidenceTurnIds" in decoded && Array.isArray(decoded.evidenceTurnIds)
+        && decoded.evidenceTurnIds.every((turnId) => typeof turnId === "string")
+        ? decoded.evidenceTurnIds
+        : [];
+      const owned = analysisKey !== null && keys.has(analysisKey);
+      const legacyProposal = analysisKey === null
+        && revision.source === "ai_change_proposal"
+        && evidenceTurnIds.length > 0
+        && evidenceTurnIds.every((turnId) => legacyEvidence.has(turnId));
+      if ((owned && (
+        revision.source === "ai_inference" || revision.source === "ai_change_proposal"
+      )) || legacyProposal) {
         this.revisions.splice(index, 1);
       }
     }
@@ -95,12 +119,12 @@ class InMemoryProfileRepository implements ProfileRepository {
         && "analysisKey" in decoded && typeof decoded.analysisKey === "string"
         ? decoded.analysisKey
         : null;
-      if (
-        analysisKey
-        && keys.has(analysisKey)
-        && fact.source === "ai_inference"
-        && !fact.locked
-      ) {
+      const evidenceTurnIds = decryptJson<string[]>(fact.evidenceTurnIds);
+      const owned = analysisKey !== null && keys.has(analysisKey);
+      const legacy = analysisKey === null
+        && evidenceTurnIds.length > 0
+        && evidenceTurnIds.every((turnId) => legacyEvidence.has(turnId));
+      if ((owned || legacy) && fact.source === "ai_inference" && !fact.locked) {
         this.facts.splice(index, 1);
       }
     }
@@ -127,11 +151,18 @@ class FakeGateway implements ModelGateway {
   }
 }
 
+type TestChunkPayload = Partial<ChunkMemoryPayload> & {
+  previousAnalysisKeys?: string[];
+  legacyAnalysisIncomplete?: boolean;
+  legacyIncompleteEvidenceTurnIds?: string[];
+};
+
 class InMemoryMemoryRepository implements MemoryRepository {
   readonly chunkUpdates: ChunkMemoryUpdate[] = [];
   roomMemory: { roomId: string; encryptedSummary: string } | undefined;
   private readonly latestUpdates = new Map<string, ChunkMemoryUpdate>();
   private readonly roomParticipants: RoomParticipantIdentity[];
+  private readonly changedChunkIds = new Set<string>();
   private roomUpsertFailures = 0;
 
   constructor(
@@ -147,7 +178,34 @@ class InMemoryMemoryRepository implements MemoryRepository {
     return this.chunks.filter((chunk) => {
       if (chunk.roomId !== roomId) return false;
       const latest = this.latestUpdates.get(chunk.id);
-      return !latest || !decryptJson<ChunkMemoryPayload>(latest.encryptedSummary).analysisComplete;
+      if (!latest) return true;
+      const decoded = decryptJson<TestChunkPayload | string>(latest.encryptedSummary);
+      return this.changedChunkIds.has(chunk.id)
+        || typeof decoded === "string"
+        || decoded.analysisComplete !== true;
+    }).map((chunk) => {
+      const latest = this.latestUpdates.get(chunk.id);
+      if (!latest) return chunk;
+      const decoded = decryptJson<TestChunkPayload | string>(latest.encryptedSummary);
+      if (typeof decoded === "string") {
+        return chunk;
+      }
+      const inheritedLegacy = decoded.legacyAnalysisIncomplete === true
+        ? decoded.legacyIncompleteEvidenceTurnIds ?? []
+        : [];
+      const legacyAnalysisIncomplete = decoded.analysisComplete === false && !decoded.analysisKey;
+      return {
+        ...chunk,
+        previousAnalysisKey: decoded.analysisKey || undefined,
+        previousAnalysisKeys: [
+          ...(decoded.analysisKey ? [decoded.analysisKey] : []),
+          ...(decoded.previousAnalysisKeys ?? []),
+        ],
+        legacyAnalysisIncomplete: legacyAnalysisIncomplete || inheritedLegacy.length > 0,
+        legacyIncompleteEvidenceTurnIds: legacyAnalysisIncomplete
+          ? chunk.turns.map((turn) => turn.id)
+          : inheritedLegacy,
+      } as MemoryChunk;
     });
   }
 
@@ -158,6 +216,10 @@ class InMemoryMemoryRepository implements MemoryRepository {
   async updateChunkMemory(update: ChunkMemoryUpdate): Promise<void> {
     this.chunkUpdates.push(update);
     this.latestUpdates.set(update.chunkId, update);
+    const decoded = decryptJson<TestChunkPayload | string>(update.encryptedSummary);
+    if (typeof decoded !== "string" && decoded.analysisComplete === true) {
+      this.changedChunkIds.delete(update.chunkId);
+    }
   }
 
   async listChunkMemories(roomId: string): Promise<StoredChunkMemory[]> {
@@ -175,6 +237,14 @@ class InMemoryMemoryRepository implements MemoryRepository {
 
   failNextRoomUpsert(): void {
     this.roomUpsertFailures += 1;
+  }
+
+  markChunkChanged(chunkId: string): void {
+    this.changedChunkIds.add(chunkId);
+  }
+
+  seedChunkMemory(update: ChunkMemoryUpdate): void {
+    this.latestUpdates.set(update.chunkId, update);
   }
 
   async upsertRoomMemory(roomId: string, encryptedSummary: string): Promise<void> {
@@ -788,6 +858,315 @@ test("divergent retry output replaces only additive facts owned by that analysis
   expect(facts.filter((fact) => fact.kind === "interest")).toHaveLength(2);
   expect(facts).toContainEqual(expect.objectContaining({ id: unrelated.id }));
   expect(facts).toContainEqual(expect.objectContaining({ id: locked.id, locked: true }));
+});
+
+test("changed chunk fingerprint removes the prior locked-fact proposal", async () => {
+  const profileRepository = new InMemoryProfileRepository();
+  const profileService = new ProfileService(profileRepository);
+  const locked = await profileService.applyProfileEdit({
+    participantId: "participant-1",
+    kind: "speech_pattern",
+    value: "장난이 적다",
+    conditions: [],
+    exceptions: [],
+    action: "edit",
+  });
+  const chunk: MemoryChunk = {
+    id: "chunk-changed-proposal",
+    roomId: "room-changed-proposal",
+    startedAt: new Date("2026-08-07T00:00:00Z"),
+    endedAt: new Date("2026-08-07T00:02:00Z"),
+    turns: [{
+      id: "turn-changed-proposal",
+      participantId: "participant-1",
+      participantName: "민수",
+      messages: [{ kind: "text", text: "민수는 오늘 장난을 많이 했다" }],
+    }],
+  };
+  const analysis = (candidateProfileFacts: unknown[]) => ({
+    topicTags: ["농담"],
+    eventTypes: ["daily_chat"],
+    emotions: ["즐거움"],
+    relationshipSignals: [],
+    summary: "장난에 관해 대화했다",
+    candidateProfileFacts,
+  });
+  const contradiction = {
+    participantId: "participant-1",
+    targetFactId: locked.id,
+    kind: "speech_pattern",
+    value: "장난이 많다",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.9,
+    evidenceTurnIds: ["turn-changed-proposal"],
+  };
+  const topics = { topics: [{
+    key: "jokes",
+    tags: ["농담"],
+    childChunkIds: ["chunk-changed-proposal"],
+    summary: "농담 관련 대화",
+  }] };
+  const memoryRepository = new InMemoryMemoryRepository([chunk]);
+  const gateway = new FakeGateway([
+    analysis([contradiction]), topics, { summary: "농담을 나누는 방" },
+    analysis([]), topics, { summary: "농담 기록이 수정된 방" },
+  ]);
+  const dependencies = { repository: memoryRepository, profileRepository, gateway };
+
+  await extractRoomMemory(chunk.roomId, dependencies);
+  expect(profileRepository.revisions.filter((revision) => revision.source === "ai_change_proposal"))
+    .toHaveLength(1);
+
+  chunk.turns[0]!.messages[0]!.text = "민수는 오늘 장난을 하지 않았다고 정정했다";
+  memoryRepository.markChunkChanged(chunk.id);
+  await extractRoomMemory(chunk.roomId, dependencies);
+
+  expect(profileRepository.revisions.filter((revision) => revision.source === "ai_change_proposal"))
+    .toHaveLength(0);
+  expect((await profileService.listProfileFacts("participant-1"))).toContainEqual(expect.objectContaining({
+    id: locked.id,
+    value: "장난이 적다",
+    locked: true,
+  }));
+});
+
+test("changed chunk fingerprint replaces divergent additive output from its prior key", async () => {
+  const chunk: MemoryChunk = {
+    id: "chunk-changed-fact",
+    roomId: "room-changed-fact",
+    startedAt: new Date("2026-08-07T00:00:00Z"),
+    endedAt: new Date("2026-08-07T00:02:00Z"),
+    turns: [{
+      id: "turn-changed-fact",
+      participantId: "participant-1",
+      participantName: "민수",
+      messages: [{ kind: "text", text: "민수는 등산을 좋아한다" }],
+    }],
+  };
+  const analysis = (value: string) => ({
+    topicTags: ["취미"],
+    eventTypes: ["daily_chat"],
+    emotions: ["흥미"],
+    relationshipSignals: [],
+    summary: "취미를 이야기했다",
+    candidateProfileFacts: [{
+      participantId: "participant-1",
+      targetFactId: null,
+      kind: "interest",
+      value,
+      conditions: [],
+      exceptions: [],
+      confidence: 0.8,
+      evidenceTurnIds: ["turn-changed-fact"],
+    }],
+  });
+  const topics = { topics: [{
+    key: "hobbies",
+    tags: ["취미"],
+    childChunkIds: [chunk.id],
+    summary: "취미 관련 대화",
+  }] };
+  const memoryRepository = new InMemoryMemoryRepository([chunk]);
+  const profileRepository = new InMemoryProfileRepository();
+  const gateway = new FakeGateway([
+    analysis("등산을 좋아한다"), topics, { summary: "취미를 공유하는 방" },
+    analysis("사진 촬영을 좋아한다"), topics, new Error("changed room summary unavailable"),
+    analysis("사진 촬영을 좋아한다"), topics, { summary: "취미 기록이 수정된 방" },
+  ]);
+  const dependencies = { repository: memoryRepository, profileRepository, gateway };
+
+  await extractRoomMemory(chunk.roomId, dependencies);
+  chunk.turns[0]!.messages[0]!.text = "민수는 사진 촬영을 좋아한다고 정정했다";
+  memoryRepository.markChunkChanged(chunk.id);
+  await expect(extractRoomMemory(chunk.roomId, dependencies))
+    .rejects.toThrow("changed room summary unavailable");
+  await extractRoomMemory(chunk.roomId, dependencies);
+
+  const values = (await new ProfileService(profileRepository).listProfileFacts("participant-1"))
+    .map((fact) => fact.value);
+  expect(values).toContain("사진 촬영을 좋아한다");
+  expect(values).not.toContain("등산을 좋아한다");
+});
+
+test("legacy incomplete replay cleans only unowned AI artifacts evidenced by that chunk", async () => {
+  const incompleteChunk: MemoryChunk = {
+    id: "chunk-legacy-incomplete",
+    roomId: "room-legacy",
+    startedAt: new Date("2026-08-07T00:00:00Z"),
+    endedAt: new Date("2026-08-07T00:01:00Z"),
+    turns: [{
+      id: "turn-legacy-incomplete",
+      participantId: "participant-1",
+      participantName: "민수",
+      messages: [{ kind: "text", text: "민수의 이전 분석" }],
+    }],
+  };
+  const completeChunk: MemoryChunk = {
+    id: "chunk-legacy-complete",
+    roomId: "room-legacy",
+    startedAt: new Date("2026-08-07T00:02:00Z"),
+    endedAt: new Date("2026-08-07T00:03:00Z"),
+    turns: [{
+      id: "turn-legacy-complete",
+      participantId: "participant-1",
+      participantName: "민수",
+      messages: [{ kind: "text", text: "민수의 완료된 이전 분석" }],
+    }],
+  };
+  const memoryRepository = new InMemoryMemoryRepository([incompleteChunk, completeChunk]);
+  const seed = (chunk: MemoryChunk, analysisComplete: boolean) => memoryRepository.seedChunkMemory({
+    roomId: chunk.roomId,
+    chunkId: chunk.id,
+    encryptedSummary: encryptJson({
+      summary: "legacy",
+      emotions: [],
+      relationshipSignals: [],
+      sourceFingerprint: "legacy-fingerprint",
+      analysisComplete,
+    }),
+    encryptedTopicTags: encryptJson([]),
+    encryptedEventTypes: encryptJson([]),
+    embedding: [0.1],
+  });
+  seed(incompleteChunk, false);
+  seed(completeChunk, true);
+  memoryRepository.markChunkChanged(completeChunk.id);
+
+  const profileRepository = new InMemoryProfileRepository();
+  const legacyFact = async (value: string, evidenceTurnId: string, locked = false) => (
+    profileRepository.createFact({
+      participantId: "participant-1",
+      kind: "interest",
+      encryptedValue: encryptJson(value),
+      encryptedConditions: encryptJson([]),
+      encryptedExceptions: encryptJson([]),
+      evidenceTurnIds: encryptJson([evidenceTurnId]),
+      confidence: 0.6,
+      source: "ai_inference",
+      locked,
+    })
+  );
+  const staleIncomplete = await legacyFact("불완전 분석 산책", "turn-legacy-incomplete");
+  const complete = await legacyFact("완료 분석 독서", "turn-legacy-complete");
+  const locked = await legacyFact("잠긴 사용자 보존", "turn-legacy-incomplete", true);
+  const owned = await new ProfileService(profileRepository).applyAiInference({
+    analysisKey: "unrelated-owned-analysis",
+    participantId: "participant-1",
+    targetFactId: null,
+    kind: "interest",
+    value: "소유된 분석 보존",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.7,
+    evidenceTurnIds: ["turn-legacy-incomplete"],
+  });
+  const staleProposal = await profileRepository.createRevision({
+    profileFactId: locked.id,
+    encryptedPreviousValue: locked.encryptedValue,
+    encryptedNextValue: encryptJson({
+      value: "불완전 제안",
+      evidenceTurnIds: ["turn-legacy-incomplete"],
+    }),
+    encryptedConditions: encryptJson([]),
+    encryptedExceptions: encryptJson([]),
+    source: "ai_change_proposal",
+  });
+  const completeProposal = await profileRepository.createRevision({
+    profileFactId: locked.id,
+    encryptedPreviousValue: locked.encryptedValue,
+    encryptedNextValue: encryptJson({
+      value: "완료 제안",
+      evidenceTurnIds: ["turn-legacy-complete"],
+    }),
+    encryptedConditions: encryptJson([]),
+    encryptedExceptions: encryptJson([]),
+    source: "ai_change_proposal",
+  });
+  const ownedProposal = await profileRepository.createRevision({
+    profileFactId: locked.id,
+    encryptedPreviousValue: locked.encryptedValue,
+    encryptedNextValue: encryptJson({
+      version: 1,
+      value: "소유된 제안",
+      evidenceTurnIds: ["turn-legacy-incomplete"],
+      analysisKey: "unrelated-owned-analysis",
+    }),
+    encryptedConditions: encryptJson([]),
+    encryptedExceptions: encryptJson([]),
+    source: "ai_change_proposal",
+  });
+  const emptyAnalysis = {
+    topicTags: [], eventTypes: [], emotions: [], relationshipSignals: [],
+    summary: "재분석", candidateProfileFacts: [],
+  };
+  const gateway = new FakeGateway([
+    emptyAnalysis,
+    emptyAnalysis,
+    { topics: [{ key: "legacy", tags: [], childChunkIds: [incompleteChunk.id, completeChunk.id], summary: "재분석" }] },
+    { summary: "레거시 재분석 완료" },
+  ]);
+
+  await extractRoomMemory("room-legacy", {
+    repository: memoryRepository,
+    profileRepository,
+    gateway,
+  });
+
+  expect(profileRepository.facts.map((fact) => fact.id)).not.toContain(staleIncomplete.id);
+  expect(profileRepository.facts.map((fact) => fact.id)).toEqual(expect.arrayContaining([
+    complete.id,
+    locked.id,
+    owned.id,
+  ]));
+  expect(profileRepository.revisions.map((revision) => revision.id)).not.toContain(staleProposal.id);
+  expect(profileRepository.revisions.map((revision) => revision.id)).toEqual(expect.arrayContaining([
+    completeProposal.id,
+    ownedProposal.id,
+  ]));
+});
+
+test("profile replacement rolls back cleanup and partial replay on a later targeted error", async () => {
+  const repository = new InMemoryProfileRepository();
+  const service = new ProfileService(repository);
+  await service.applyAiInference({
+    analysisKey: "rollback-analysis",
+    participantId: "participant-1",
+    targetFactId: null,
+    kind: "interest",
+    value: "원래 분석",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.7,
+    evidenceTurnIds: ["turn-rollback"],
+  });
+  const beforeFacts = repository.facts.map((fact) => ({ ...fact }));
+  const beforeRevisions = repository.revisions.map((revision) => ({ ...revision }));
+
+  await expect(service.replaceAiAnalysis(["rollback-analysis"], [{
+    analysisKey: "rollback-analysis",
+    participantId: "participant-1",
+    targetFactId: null,
+    kind: "interest",
+    value: "부분 재생",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.8,
+    evidenceTurnIds: ["turn-rollback"],
+  }, {
+    analysisKey: "rollback-analysis",
+    participantId: "participant-1",
+    targetFactId: "missing-target",
+    kind: "interest",
+    value: "실패 대상",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.8,
+    evidenceTurnIds: ["turn-rollback"],
+  }])).rejects.toThrow("same participant and fact kind");
+
+  expect(repository.facts).toEqual(beforeFacts);
+  expect(repository.revisions).toEqual(beforeRevisions);
 });
 
 test("legacy encrypted string fact and revision values remain readable", async () => {

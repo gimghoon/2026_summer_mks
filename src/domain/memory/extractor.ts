@@ -48,6 +48,10 @@ export type MemoryChunk = {
   startedAt: Date;
   endedAt: Date;
   turns: MemoryTurn[];
+  previousAnalysisKey?: string;
+  previousAnalysisKeys?: string[];
+  legacyAnalysisIncomplete?: boolean;
+  legacyIncompleteEvidenceTurnIds?: string[];
 };
 
 export type RoomParticipantIdentity = {
@@ -62,6 +66,9 @@ export type ChunkMemoryPayload = {
   sourceFingerprint: string;
   analysisKey: string;
   analysisComplete: boolean;
+  previousAnalysisKeys?: string[];
+  legacyAnalysisIncomplete?: boolean;
+  legacyIncompleteEvidenceTurnIds?: string[];
 };
 
 export type ChunkMemoryUpdate = {
@@ -176,12 +183,34 @@ export function createDrizzleMemoryRepository(
         };
         return { memoryChunk, encryptedSummary };
       }));
-      return loaded.filter(({ memoryChunk, encryptedSummary }) => {
+      return loaded.flatMap<MemoryChunk>(({ memoryChunk, encryptedSummary }) => {
         const previous = decryptJson<Partial<ChunkMemoryPayload> | string>(encryptedSummary);
-        return typeof previous === "string"
+        const needsAnalysis = typeof previous === "string"
           || previous.analysisComplete !== true
           || previous.sourceFingerprint !== chunkSourceFingerprint(memoryChunk, roomParticipants);
-      }).map(({ memoryChunk }) => memoryChunk);
+        if (!needsAnalysis) return [];
+        if (typeof previous === "string") {
+          return [memoryChunk];
+        }
+        const previousAnalysisKey = previous.analysisKey || undefined;
+        const previousAnalysisKeys = [...new Set([
+          ...(previousAnalysisKey ? [previousAnalysisKey] : []),
+          ...(previous.previousAnalysisKeys ?? []).filter(Boolean),
+        ])];
+        const inheritedLegacyEvidence = previous.legacyAnalysisIncomplete === true
+          ? previous.legacyIncompleteEvidenceTurnIds ?? []
+          : [];
+        const isLegacyIncomplete = previous.analysisComplete === false && !previousAnalysisKey;
+        return [{
+          ...memoryChunk,
+          previousAnalysisKey,
+          previousAnalysisKeys,
+          legacyAnalysisIncomplete: isLegacyIncomplete || inheritedLegacyEvidence.length > 0,
+          legacyIncompleteEvidenceTurnIds: isLegacyIncomplete
+            ? memoryChunk.turns.map((turn) => turn.id)
+            : inheritedLegacyEvidence,
+        }];
+      });
     },
 
     listRoomParticipants: roomParticipantIdentities,
@@ -223,6 +252,9 @@ export function createDrizzleMemoryRepository(
           sourceFingerprint: payload.sourceFingerprint ?? "",
           analysisKey: payload.analysisKey ?? "",
           analysisComplete: payload.analysisComplete === true,
+          previousAnalysisKeys: payload.previousAnalysisKeys ?? [],
+          legacyAnalysisIncomplete: payload.legacyAnalysisIncomplete === true,
+          legacyIncompleteEvidenceTurnIds: payload.legacyIncompleteEvidenceTurnIds ?? [],
           topicTags: decryptJson<string[]>(row.encryptedTopicTags),
           eventTypes: decryptJson<string[]>(row.encryptedEventTypes),
         };
@@ -391,16 +423,33 @@ export async function extractRoomMemory(
       redactedText,
       sourceFingerprint,
       analysisKey: chunkAnalysisKey(roomId, chunk.id, sourceFingerprint),
+      previousAnalysisKeys: [...new Set([
+        ...(chunk.previousAnalysisKey ? [chunk.previousAnalysisKey] : []),
+        ...(chunk.previousAnalysisKeys ?? []),
+      ].filter(Boolean))],
+      legacyIncompleteEvidenceTurnIds: chunk.legacyAnalysisIncomplete === true
+        ? [...new Set(chunk.legacyIncompleteEvidenceTurnIds ?? [])]
+        : [],
     };
   });
-  const pendingAnalysisKeys = preparedChunks.map((item) => item.analysisKey);
+  const pendingAnalysisKeys = [...new Set(preparedChunks.flatMap((item) => [
+    item.analysisKey,
+    ...item.previousAnalysisKeys,
+  ]))];
   const existingProfileFacts = (await Promise.all(roomParticipants.map((participant) => (
     profileService.listProfileFacts(participant.id, pendingAnalysisKeys)
   )))).flat();
 
   const analyses = [];
   for (const prepared of preparedChunks) {
-    const { chunk, redactedText, sourceFingerprint, analysisKey } = prepared;
+    const {
+      chunk,
+      redactedText,
+      sourceFingerprint,
+      analysisKey,
+      previousAnalysisKeys,
+      legacyIncompleteEvidenceTurnIds,
+    } = prepared;
     const analysis = await dependencies.gateway.extract({
       purpose: "analysis",
       schemaName: "conversation_chunk_memory",
@@ -427,7 +476,15 @@ export async function extractRoomMemory(
     for (const fact of analysis.candidateProfileFacts) {
       validateEvidence(chunk, fact, roomParticipants, existingProfileFacts);
     }
-    analyses.push({ chunk, redactedText, sourceFingerprint, analysisKey, analysis });
+    analyses.push({
+      chunk,
+      redactedText,
+      sourceFingerprint,
+      analysisKey,
+      previousAnalysisKeys,
+      legacyIncompleteEvidenceTurnIds,
+      analysis,
+    });
   }
 
   const embeddings = await dependencies.gateway.embed(analyses.map((item) => item.redactedText));
@@ -457,6 +514,9 @@ export async function extractRoomMemory(
         sourceFingerprint: update.item.sourceFingerprint,
         analysisKey: update.item.analysisKey,
         analysisComplete: false,
+        previousAnalysisKeys: update.item.previousAnalysisKeys,
+        legacyAnalysisIncomplete: update.item.legacyIncompleteEvidenceTurnIds.length > 0,
+        legacyIncompleteEvidenceTurnIds: update.item.legacyIncompleteEvidenceTurnIds,
       }),
       encryptedTopicTags: update.encryptedTopicTags,
       encryptedEventTypes: update.encryptedEventTypes,
@@ -480,6 +540,9 @@ export async function extractRoomMemory(
         sourceFingerprint: _sourceFingerprint,
         analysisKey: _analysisKey,
         analysisComplete: _analysisComplete,
+        previousAnalysisKeys: _previousAnalysisKeys,
+        legacyAnalysisIncomplete: _legacyAnalysisIncomplete,
+        legacyIncompleteEvidenceTurnIds: _legacyIncompleteEvidenceTurnIds,
         ...memory
       }) => memory),
     }),
@@ -509,8 +572,9 @@ export async function extractRoomMemory(
     }))
   ));
   const proposedFacts: ProfileFactView[] = await profileService.replaceAiAnalysis(
-    analyses.map((item) => item.analysisKey),
+    pendingAnalysisKeys,
     profileOperations,
+    [...new Set(preparedChunks.flatMap((item) => item.legacyIncompleteEvidenceTurnIds))],
   );
 
   await dependencies.repository.upsertRoomMemory(roomId, encryptJson<RoomMemoryPayload>({

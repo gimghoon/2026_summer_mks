@@ -107,7 +107,7 @@ export interface ProfileRepository {
   createRevision(revision: NewStoredRevision): Promise<StoredProfileRevision>;
   findRevision(revisionId: string): Promise<StoredProfileRevision | undefined>;
   updateRevisionSource(revisionId: string, source: ProfileFactSource): Promise<void>;
-  cleanupAiAnalysis(analysisKeys: string[]): Promise<void>;
+  cleanupAiAnalysis(analysisKeys: string[], legacyEvidenceTurnIds?: string[]): Promise<void>;
 }
 
 type DrizzleExecutor = Pick<
@@ -190,9 +190,10 @@ function createDrizzleOperations(database: DrizzleExecutor): Omit<ProfileReposit
         .where(eq(profileFactRevisions.id, revisionId));
     },
 
-    async cleanupAiAnalysis(analysisKeys) {
-      if (analysisKeys.length === 0) return;
+    async cleanupAiAnalysis(analysisKeys, legacyEvidenceTurnIds = []) {
+      if (analysisKeys.length === 0 && legacyEvidenceTurnIds.length === 0) return;
       const keys = new Set(analysisKeys);
+      const legacyEvidence = new Set(legacyEvidenceTurnIds);
       const rows = await database.select({
         id: profileFactRevisions.id,
         profileFactId: profileFactRevisions.profileFactId,
@@ -207,8 +208,18 @@ function createDrizzleOperations(database: DrizzleExecutor): Omit<ProfileReposit
         const key = revisionValue(revision.encryptedNextValue).analysisKey;
         return key !== null && keys.has(key);
       });
+      const legacyProposals = rows.filter((revision) => {
+        if (revision.source !== "ai_change_proposal") return false;
+        const value = revisionValue(revision.encryptedNextValue);
+        return value.analysisKey === null
+          && value.evidenceTurnIds.length > 0
+          && value.evidenceTurnIds.every((turnId) => legacyEvidence.has(turnId));
+      });
 
-      for (const proposal of owned.filter((revision) => revision.source === "ai_change_proposal")) {
+      for (const proposal of [...owned, ...legacyProposals].filter((revision, index, revisions) => (
+        revision.source === "ai_change_proposal"
+        && revisions.findIndex((candidate) => candidate.id === revision.id) === index
+      ))) {
         await database.delete(profileFactRevisions).where(eq(profileFactRevisions.id, proposal.id));
       }
 
@@ -264,13 +275,16 @@ function createDrizzleOperations(database: DrizzleExecutor): Omit<ProfileReposit
       const factsToCheck = await database.select({
         id: profileFacts.id,
         encryptedValue: profileFacts.encryptedValue,
+        evidenceTurnIds: profileFacts.evidenceTurnIds,
       }).from(profileFacts).where(and(
         eq(profileFacts.source, "ai_inference"),
         eq(profileFacts.locked, false),
       ));
       const factIds = factsToCheck.filter((fact) => {
         const key = factValue(fact.encryptedValue).analysisKey;
-        return key !== null && keys.has(key);
+        if (key !== null) return keys.has(key);
+        const evidence = decryptJson<string[]>(fact.evidenceTurnIds);
+        return evidence.length > 0 && evidence.every((turnId) => legacyEvidence.has(turnId));
       }).map((fact) => fact.id);
       if (factIds.length > 0) {
         await database.delete(profileFacts).where(inArray(profileFacts.id, factIds));
@@ -557,6 +571,7 @@ export class ProfileService {
   async replaceAiAnalysis(
     analysisKeys: string[],
     facts: AiProfileFact[],
+    legacyEvidenceTurnIds: string[] = [],
   ): Promise<ProfileFactView[]> {
     if (analysisKeys.some((key) => !key)) {
       throw new Error("AI profile replacement requires non-empty analysis keys");
@@ -569,7 +584,7 @@ export class ProfileService {
       }
     }
     return this.repository.transaction(async (repository) => {
-      await repository.cleanupAiAnalysis(analysisKeys);
+      await repository.cleanupAiAnalysis(analysisKeys, legacyEvidenceTurnIds);
       const views: ProfileFactView[] = [];
       for (const fact of facts) {
         views.push(await this.applyAiInferenceWithRepository(fact, repository));
