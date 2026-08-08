@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { z } from "zod";
 
@@ -60,6 +60,7 @@ export type CorrectionProposal = {
 };
 
 export type AiProfileFact = {
+  analysisKey: string;
   participantId: string;
   targetFactId: string | null;
   kind: ProfileFactKind;
@@ -106,11 +107,12 @@ export interface ProfileRepository {
   createRevision(revision: NewStoredRevision): Promise<StoredProfileRevision>;
   findRevision(revisionId: string): Promise<StoredProfileRevision | undefined>;
   updateRevisionSource(revisionId: string, source: ProfileFactSource): Promise<void>;
+  cleanupAiAnalysis(analysisKeys: string[]): Promise<void>;
 }
 
 type DrizzleExecutor = Pick<
   NodePgDatabase<typeof import("@/db/schema")>,
-  "select" | "insert" | "update"
+  "select" | "insert" | "update" | "delete"
 >;
 
 function createDrizzleOperations(database: DrizzleExecutor): Omit<ProfileRepository, "transaction"> {
@@ -187,6 +189,93 @@ function createDrizzleOperations(database: DrizzleExecutor): Omit<ProfileReposit
       await database.update(profileFactRevisions).set({ source })
         .where(eq(profileFactRevisions.id, revisionId));
     },
+
+    async cleanupAiAnalysis(analysisKeys) {
+      if (analysisKeys.length === 0) return;
+      const keys = new Set(analysisKeys);
+      const rows = await database.select({
+        id: profileFactRevisions.id,
+        profileFactId: profileFactRevisions.profileFactId,
+        encryptedPreviousValue: profileFactRevisions.encryptedPreviousValue,
+        encryptedNextValue: profileFactRevisions.encryptedNextValue,
+        source: profileFactRevisions.source,
+      }).from(profileFactRevisions).where(inArray(profileFactRevisions.source, [
+        "ai_inference",
+        "ai_change_proposal",
+      ]));
+      const owned = rows.filter((revision) => {
+        const key = revisionValue(revision.encryptedNextValue).analysisKey;
+        return key !== null && keys.has(key);
+      });
+
+      for (const proposal of owned.filter((revision) => revision.source === "ai_change_proposal")) {
+        await database.delete(profileFactRevisions).where(eq(profileFactRevisions.id, proposal.id));
+      }
+
+      // Restore updated facts by following the current analysis key backwards.
+      // This preserves a fact that originated in an unrelated analysis.
+      const inferenceRevisions = owned.filter((revision) => revision.source === "ai_inference");
+      const remaining = new Set(inferenceRevisions.map((revision) => revision.id));
+      let restored = true;
+      while (restored) {
+        restored = false;
+        for (const revision of inferenceRevisions) {
+          if (!remaining.has(revision.id)) continue;
+          const factRows = await database.select({
+            id: profileFacts.id,
+            encryptedValue: profileFacts.encryptedValue,
+            source: profileFacts.source,
+            locked: profileFacts.locked,
+          }).from(profileFacts).where(eq(profileFacts.id, revision.profileFactId));
+          const current = factRows[0];
+          const revisionKey = revisionValue(revision.encryptedNextValue).analysisKey;
+          if (
+            !current
+            || current.locked
+            || current.source !== "ai_inference"
+            || factValue(current.encryptedValue).analysisKey !== revisionKey
+          ) {
+            continue;
+          }
+          const previous = revision.encryptedPreviousValue
+            ? factSnapshot(revision.encryptedPreviousValue)
+            : undefined;
+          if (!previous) continue;
+          await database.update(profileFacts).set({
+            encryptedValue: encryptedFactValue(previous.value, previous.analysisKey),
+            encryptedConditions: encryptJson(previous.conditions),
+            encryptedExceptions: encryptJson(previous.exceptions),
+            evidenceTurnIds: encryptJson(previous.evidenceTurnIds),
+            confidence: previous.confidence,
+            source: previous.source,
+            locked: previous.locked,
+            updatedAt: new Date(),
+          }).where(eq(profileFacts.id, current.id));
+          await database.delete(profileFactRevisions).where(eq(profileFactRevisions.id, revision.id));
+          remaining.delete(revision.id);
+          restored = true;
+        }
+      }
+      if (remaining.size > 0) {
+        await database.delete(profileFactRevisions)
+          .where(inArray(profileFactRevisions.id, [...remaining]));
+      }
+
+      const factsToCheck = await database.select({
+        id: profileFacts.id,
+        encryptedValue: profileFacts.encryptedValue,
+      }).from(profileFacts).where(and(
+        eq(profileFacts.source, "ai_inference"),
+        eq(profileFacts.locked, false),
+      ));
+      const factIds = factsToCheck.filter((fact) => {
+        const key = factValue(fact.encryptedValue).analysisKey;
+        return key !== null && keys.has(key);
+      }).map((fact) => fact.id);
+      if (factIds.length > 0) {
+        await database.delete(profileFacts).where(inArray(profileFacts.id, factIds));
+      }
+    },
   };
 }
 
@@ -225,7 +314,7 @@ function toView(fact: StoredProfileFact): ProfileFactView {
     id: fact.id,
     participantId: fact.participantId,
     kind: fact.kind,
-    value: decryptJson<string>(fact.encryptedValue),
+    value: factValue(fact.encryptedValue).value,
     conditions: decryptJson<string[]>(fact.encryptedConditions),
     exceptions: decryptJson<string[]>(fact.encryptedExceptions),
     confidence: fact.confidence,
@@ -240,25 +329,68 @@ function encryptedFactContent(input: {
   conditions: string[];
   exceptions: string[];
   evidenceTurnIds: string[];
-}) {
+}, analysisKey: string | null = null) {
   return {
-    encryptedValue: encryptJson(input.value),
+    encryptedValue: encryptedFactValue(input.value, analysisKey),
     encryptedConditions: encryptJson(input.conditions),
     encryptedExceptions: encryptJson(input.exceptions),
     evidenceTurnIds: encryptJson(input.evidenceTurnIds),
   };
 }
 
-type RevisionValuePayload = { value: string; evidenceTurnIds: string[] };
+type FactValue = { value: string; analysisKey: string | null };
 
-function encryptedRevisionValue(value: string, evidenceTurnIds: string[]): string {
-  return encryptJson<RevisionValuePayload>({ value, evidenceTurnIds });
+type AiFactValuePayload = {
+  version: 1;
+  value: string;
+  analysisKey: string;
+};
+
+function encryptedFactValue(value: string, analysisKey: string | null): string {
+  return analysisKey
+    ? encryptJson<AiFactValuePayload>({ version: 1, value, analysisKey })
+    : encryptJson(value);
+}
+
+function factValue(payload: string): FactValue {
+  const decoded = decryptJson<unknown>(payload);
+  if (typeof decoded === "string") return { value: decoded, analysisKey: null };
+  if (
+    typeof decoded === "object"
+    && decoded !== null
+    && "version" in decoded
+    && decoded.version === 1
+    && "value" in decoded
+    && typeof decoded.value === "string"
+    && "analysisKey" in decoded
+    && typeof decoded.analysisKey === "string"
+  ) {
+    return { value: decoded.value, analysisKey: decoded.analysisKey };
+  }
+  throw new Error("Invalid encrypted profile fact value");
+}
+
+type RevisionValuePayload = {
+  version: 1;
+  value: string;
+  evidenceTurnIds: string[];
+  analysisKey: string | null;
+};
+
+function encryptedRevisionValue(
+  value: string,
+  evidenceTurnIds: string[],
+  analysisKey: string | null = null,
+): string {
+  return encryptJson<RevisionValuePayload>({ version: 1, value, evidenceTurnIds, analysisKey });
 }
 
 function revisionValue(payload: string): RevisionValuePayload {
   const decoded = decryptJson<unknown>(payload);
   // Supports revision rows created before evidence was included in this payload.
-  if (typeof decoded === "string") return { value: decoded, evidenceTurnIds: [] };
+  if (typeof decoded === "string") {
+    return { version: 1, value: decoded, evidenceTurnIds: [], analysisKey: null };
+  }
   if (
     typeof decoded === "object"
     && decoded !== null
@@ -268,12 +400,79 @@ function revisionValue(payload: string): RevisionValuePayload {
     && Array.isArray(decoded.evidenceTurnIds)
     && decoded.evidenceTurnIds.every((id) => typeof id === "string")
   ) {
-    return { value: decoded.value, evidenceTurnIds: decoded.evidenceTurnIds };
+    return {
+      version: 1,
+      value: decoded.value,
+      evidenceTurnIds: decoded.evidenceTurnIds,
+      analysisKey: "analysisKey" in decoded && typeof decoded.analysisKey === "string"
+        ? decoded.analysisKey
+        : null,
+    };
   }
   throw new Error("Invalid encrypted profile revision value");
 }
 
+type ProfileFactSnapshot = {
+  version: 1;
+  value: string;
+  analysisKey: string | null;
+  conditions: string[];
+  exceptions: string[];
+  evidenceTurnIds: string[];
+  confidence: number;
+  source: ProfileFactSource;
+  locked: boolean;
+};
+
+function encryptedFactSnapshot(fact: StoredProfileFact): string {
+  const value = factValue(fact.encryptedValue);
+  return encryptJson<ProfileFactSnapshot>({
+    version: 1,
+    value: value.value,
+    analysisKey: value.analysisKey,
+    conditions: decryptJson<string[]>(fact.encryptedConditions),
+    exceptions: decryptJson<string[]>(fact.encryptedExceptions),
+    evidenceTurnIds: decryptJson<string[]>(fact.evidenceTurnIds),
+    confidence: fact.confidence,
+    source: fact.source,
+    locked: fact.locked,
+  });
+}
+
+function factSnapshot(payload: string): ProfileFactSnapshot | undefined {
+  const decoded = decryptJson<unknown>(payload);
+  if (
+    typeof decoded !== "object"
+    || decoded === null
+    || !("version" in decoded)
+    || decoded.version !== 1
+    || !("value" in decoded)
+    || typeof decoded.value !== "string"
+    || !("analysisKey" in decoded)
+    || !(typeof decoded.analysisKey === "string" || decoded.analysisKey === null)
+    || !("conditions" in decoded)
+    || !Array.isArray(decoded.conditions)
+    || !decoded.conditions.every((value) => typeof value === "string")
+    || !("exceptions" in decoded)
+    || !Array.isArray(decoded.exceptions)
+    || !decoded.exceptions.every((value) => typeof value === "string")
+    || !("evidenceTurnIds" in decoded)
+    || !Array.isArray(decoded.evidenceTurnIds)
+    || !decoded.evidenceTurnIds.every((value) => typeof value === "string")
+    || !("confidence" in decoded)
+    || typeof decoded.confidence !== "number"
+    || !("source" in decoded)
+    || !["ai_inference", "user_confirmed", "user_edited", "ai_change_proposal"].includes(String(decoded.source))
+    || !("locked" in decoded)
+    || typeof decoded.locked !== "boolean"
+  ) {
+    return undefined;
+  }
+  return decoded as ProfileFactSnapshot;
+}
+
 function assertAiFact(input: AiProfileFact): void {
+  if (!input.analysisKey) throw new Error("AI profile facts require an analysis key");
   if (!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) {
     throw new RangeError("AI profile confidence must be between 0 and 1");
   }
@@ -295,9 +494,16 @@ export class ProfileService {
     private readonly gateway?: ModelGateway,
   ) {}
 
-  async listProfileFacts(participantId: string): Promise<ProfileFactView[]> {
+  async listProfileFacts(
+    participantId: string,
+    excludedAnalysisKeys: string[] = [],
+  ): Promise<ProfileFactView[]> {
+    const excluded = new Set(excludedAnalysisKeys);
     const facts = await this.repository.listFacts(participantId);
-    return facts.filter((fact) => fact.source !== "ai_change_proposal").map(toView);
+    return facts.filter((fact) => (
+      fact.source !== "ai_change_proposal"
+      && !excluded.has(factValue(fact.encryptedValue).analysisKey ?? "")
+    )).map(toView);
   }
 
   async applyProfileEdit(command: ProfileEditCommand): Promise<ProfileFactView> {
@@ -345,101 +551,138 @@ export class ProfileService {
 
   async applyAiInference(input: AiProfileFact): Promise<ProfileFactView> {
     assertAiFact(input);
+    return this.repository.transaction((repository) => this.applyAiInferenceWithRepository(input, repository));
+  }
+
+  async replaceAiAnalysis(
+    analysisKeys: string[],
+    facts: AiProfileFact[],
+  ): Promise<ProfileFactView[]> {
+    if (analysisKeys.some((key) => !key)) {
+      throw new Error("AI profile replacement requires non-empty analysis keys");
+    }
+    const allowedKeys = new Set(analysisKeys);
+    for (const fact of facts) {
+      assertAiFact(fact);
+      if (!allowedKeys.has(fact.analysisKey)) {
+        throw new Error("AI profile fact analysis key is outside the replacement set");
+      }
+    }
     return this.repository.transaction(async (repository) => {
-      const existingFacts = (await repository.listFacts(input.participantId))
-        .filter((fact) => fact.kind === input.kind && fact.source !== "ai_change_proposal");
-      const exact = existingFacts.find((fact) => {
-        const view = toView(fact);
-        return view.value === input.value
-          && sameStrings(view.conditions, input.conditions)
-          && sameStrings(view.exceptions, input.exceptions);
-      });
-      let existing: StoredProfileFact | undefined;
-      if (input.targetFactId) {
-        const target = await repository.findFact(input.targetFactId);
-        if (
-          !target
-          || target.participantId !== input.participantId
-          || target.kind !== input.kind
-          || target.source === "ai_change_proposal"
-        ) {
-          throw new Error("AI profile target must match the same participant and fact kind");
-        }
-        existing = target;
-      } else {
-        existing = exact;
+      await repository.cleanupAiAnalysis(analysisKeys);
+      const views: ProfileFactView[] = [];
+      for (const fact of facts) {
+        views.push(await this.applyAiInferenceWithRepository(fact, repository));
       }
-      const incoming = {
-        value: input.value,
-        conditions: input.conditions,
-        exceptions: input.exceptions,
-        confidence: input.confidence,
-        source: "ai_inference" as const,
-        locked: false,
-      };
-      const content = encryptedFactContent(input);
+      return views;
+    });
+  }
 
-      if (!existing) {
-        return toView(await repository.createFact({
-          participantId: input.participantId,
-          kind: input.kind,
-          ...content,
-          confidence: input.confidence,
-          source: "ai_inference",
-          locked: false,
-        }));
+  private async applyAiInferenceWithRepository(
+    input: AiProfileFact,
+    repository: ProfileRepository,
+  ): Promise<ProfileFactView> {
+    const existingFacts = (await repository.listFacts(input.participantId))
+      .filter((fact) => fact.kind === input.kind && fact.source !== "ai_change_proposal");
+    const exact = existingFacts.find((fact) => {
+      const view = toView(fact);
+      return view.value === input.value
+        && sameStrings(view.conditions, input.conditions)
+        && sameStrings(view.exceptions, input.exceptions);
+    });
+    let existing: StoredProfileFact | undefined;
+    if (input.targetFactId) {
+      const target = await repository.findFact(input.targetFactId);
+      if (
+        !target
+        || target.participantId !== input.participantId
+        || target.kind !== input.kind
+        || target.source === "ai_change_proposal"
+      ) {
+        throw new Error("AI profile target must match the same participant and fact kind");
       }
+      existing = target;
+    } else {
+      existing = exact;
+    }
+    const incoming = {
+      value: input.value,
+      conditions: input.conditions,
+      exceptions: input.exceptions,
+      confidence: input.confidence,
+      source: "ai_inference" as const,
+      locked: false,
+    };
+    const content = encryptedFactContent(input, input.analysisKey);
 
-      const current = toView(existing);
-      const matchesExisting = current.value === input.value
-        && sameStrings(current.conditions, input.conditions)
-        && sameStrings(current.exceptions, input.exceptions);
-      if (matchesExisting && (
-        current.locked
-        || current.source === "user_edited"
-        || current.source === "user_confirmed"
-      )) {
-        return current;
-      }
-      const merged = mergeProfileFact(current, incoming);
-      if (merged.proposal) {
-        const revision = await repository.createRevision({
-          profileFactId: existing.id,
-          encryptedPreviousValue: existing.encryptedValue,
-          encryptedNextValue: encryptedRevisionValue(input.value, input.evidenceTurnIds),
-          encryptedConditions: content.encryptedConditions,
-          encryptedExceptions: content.encryptedExceptions,
-          source: "ai_change_proposal",
-        });
-        return {
-          id: revision.id,
-          participantId: input.participantId,
-          kind: input.kind,
-          value: input.value,
-          conditions: input.conditions,
-          exceptions: input.exceptions,
-          confidence: input.confidence,
-          source: "ai_change_proposal",
-          locked: false,
-          evidenceTurnIds: input.evidenceTurnIds,
-        };
-      }
-
-      await repository.createRevision({
-        profileFactId: existing.id,
-        encryptedPreviousValue: existing.encryptedValue,
-        encryptedNextValue: encryptedRevisionValue(input.value, input.evidenceTurnIds),
-        encryptedConditions: content.encryptedConditions,
-        encryptedExceptions: content.encryptedExceptions,
-        source: "ai_inference",
-      });
-      return toView(await repository.updateFact(existing.id, {
+    if (!existing) {
+      return toView(await repository.createFact({
+        participantId: input.participantId,
+        kind: input.kind,
         ...content,
         confidence: input.confidence,
         source: "ai_inference",
         locked: false,
       }));
+    }
+
+    const current = toView(existing);
+    const matchesExisting = current.value === input.value
+      && sameStrings(current.conditions, input.conditions)
+      && sameStrings(current.exceptions, input.exceptions);
+    if (matchesExisting && (
+      current.locked
+      || current.source === "user_edited"
+      || current.source === "user_confirmed"
+    )) {
+      return current;
+    }
+    const merged = mergeProfileFact(current, incoming);
+    if (merged.proposal) {
+      const revision = await repository.createRevision({
+        profileFactId: existing.id,
+        encryptedPreviousValue: existing.encryptedValue,
+        encryptedNextValue: encryptedRevisionValue(
+          input.value,
+          input.evidenceTurnIds,
+          input.analysisKey,
+        ),
+        encryptedConditions: content.encryptedConditions,
+        encryptedExceptions: content.encryptedExceptions,
+        source: "ai_change_proposal",
+      });
+      return {
+        id: revision.id,
+        participantId: input.participantId,
+        kind: input.kind,
+        value: input.value,
+        conditions: input.conditions,
+        exceptions: input.exceptions,
+        confidence: input.confidence,
+        source: "ai_change_proposal",
+        locked: false,
+        evidenceTurnIds: input.evidenceTurnIds,
+      };
+    }
+
+    await repository.createRevision({
+      profileFactId: existing.id,
+      encryptedPreviousValue: encryptedFactSnapshot(existing),
+      encryptedNextValue: encryptedRevisionValue(
+        input.value,
+        input.evidenceTurnIds,
+        input.analysisKey,
+      ),
+      encryptedConditions: content.encryptedConditions,
+      encryptedExceptions: content.encryptedExceptions,
+      source: "ai_inference",
     });
+    return toView(await repository.updateFact(existing.id, {
+      ...content,
+      confidence: input.confidence,
+      source: "ai_inference",
+      locked: false,
+    }));
   }
 
   async proposeProfileCorrection(input: CorrectionChatInput): Promise<CorrectionProposal> {
@@ -486,7 +729,7 @@ export class ProfileService {
           proposalId: revision.id,
           participantId: input.participantId,
           factKind: result.factKind,
-          oldValue: decryptJson<string>(matching.encryptedValue),
+          oldValue: factValue(matching.encryptedValue).value,
           newValue: result.newValue,
           conditions: result.conditions,
           exceptions: result.exceptions,

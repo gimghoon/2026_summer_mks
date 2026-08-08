@@ -1,5 +1,5 @@
 import type { StructuredModelRequest, ModelGateway } from "@/domain/models/gateway";
-import { decryptJson } from "@/domain/crypto/encrypted-json";
+import { decryptJson, encryptJson } from "@/domain/crypto/encrypted-json";
 import {
   extractRoomMemory,
   redactChunkForEmbedding,
@@ -23,6 +23,8 @@ import { GET as getProfileRoute } from "@/app/api/profiles/[participantId]/route
 class InMemoryProfileRepository implements ProfileRepository {
   readonly facts: StoredProfileFact[] = [];
   readonly revisions: StoredProfileRevision[] = [];
+  private factSequence = 0;
+  private revisionSequence = 0;
 
   async transaction<T>(work: (repository: ProfileRepository) => Promise<T>): Promise<T> {
     return work(this);
@@ -37,7 +39,7 @@ class InMemoryProfileRepository implements ProfileRepository {
   }
 
   async createFact(fact: Omit<StoredProfileFact, "id">): Promise<StoredProfileFact> {
-    const created = { ...fact, id: `fact-${this.facts.length + 1}` };
+    const created = { ...fact, id: `fact-${++this.factSequence}` };
     this.facts.push(created);
     return created;
   }
@@ -54,7 +56,7 @@ class InMemoryProfileRepository implements ProfileRepository {
   }
 
   async createRevision(revision: Omit<StoredProfileRevision, "id">): Promise<StoredProfileRevision> {
-    const created = { ...revision, id: `revision-${this.revisions.length + 1}` };
+    const created = { ...revision, id: `revision-${++this.revisionSequence}` };
     this.revisions.push(created);
     return created;
   }
@@ -67,6 +69,41 @@ class InMemoryProfileRepository implements ProfileRepository {
     const revision = this.revisions.find((candidate) => candidate.id === revisionId);
     if (!revision) throw new Error("Profile revision not found");
     revision.source = source;
+  }
+
+  async cleanupAiAnalysis(analysisKeys: string[]): Promise<void> {
+    const keys = new Set(analysisKeys);
+    for (let index = this.revisions.length - 1; index >= 0; index -= 1) {
+      const revision = this.revisions[index]!;
+      const decoded = decryptJson<unknown>(revision.encryptedNextValue);
+      const analysisKey = typeof decoded === "object" && decoded !== null
+        && "analysisKey" in decoded && typeof decoded.analysisKey === "string"
+        ? decoded.analysisKey
+        : null;
+      if (
+        analysisKey
+        && keys.has(analysisKey)
+        && (revision.source === "ai_inference" || revision.source === "ai_change_proposal")
+      ) {
+        this.revisions.splice(index, 1);
+      }
+    }
+    for (let index = this.facts.length - 1; index >= 0; index -= 1) {
+      const fact = this.facts[index]!;
+      const decoded = decryptJson<unknown>(fact.encryptedValue);
+      const analysisKey = typeof decoded === "object" && decoded !== null
+        && "analysisKey" in decoded && typeof decoded.analysisKey === "string"
+        ? decoded.analysisKey
+        : null;
+      if (
+        analysisKey
+        && keys.has(analysisKey)
+        && fact.source === "ai_inference"
+        && !fact.locked
+      ) {
+        this.facts.splice(index, 1);
+      }
+    }
   }
 }
 
@@ -95,6 +132,7 @@ class InMemoryMemoryRepository implements MemoryRepository {
   roomMemory: { roomId: string; encryptedSummary: string } | undefined;
   private readonly latestUpdates = new Map<string, ChunkMemoryUpdate>();
   private readonly roomParticipants: RoomParticipantIdentity[];
+  private roomUpsertFailures = 0;
 
   constructor(
     private readonly chunks: MemoryChunk[],
@@ -135,7 +173,15 @@ class InMemoryMemoryRepository implements MemoryRepository {
     });
   }
 
+  failNextRoomUpsert(): void {
+    this.roomUpsertFailures += 1;
+  }
+
   async upsertRoomMemory(roomId: string, encryptedSummary: string): Promise<void> {
+    if (this.roomUpsertFailures > 0) {
+      this.roomUpsertFailures -= 1;
+      throw new Error("room memory write unavailable");
+    }
     this.roomMemory = { roomId, encryptedSummary };
   }
 }
@@ -296,6 +342,7 @@ test("hierarchical extraction preserves locked facts, provenance, encryption, an
     emotions: ["즐거움"],
     relationshipSignals: ["친밀한 장난"],
     sourceFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    analysisKey: expect.stringMatching(/^[a-f0-9]{64}$/),
     analysisComplete: true,
   });
   expect(decryptJson<RoomMemoryPayload>(memoryRepository.roomMemory!.encryptedSummary)).toEqual({
@@ -329,6 +376,7 @@ test("AI facts without evidence or bounded confidence are rejected", async () =>
   const service = new ProfileService(repository);
 
   await expect(service.applyAiInference({
+    analysisKey: "bounds-analysis",
     participantId: "participant-1",
     targetFactId: null,
     kind: "interest",
@@ -339,6 +387,7 @@ test("AI facts without evidence or bounded confidence are rejected", async () =>
     evidenceTurnIds: ["turn-1"],
   })).rejects.toThrow("between 0 and 1");
   await expect(service.applyAiInference({
+    analysisKey: "bounds-analysis",
     participantId: "participant-1",
     targetFactId: null,
     kind: "interest",
@@ -357,6 +406,7 @@ test("untargeted same-kind inferences remain additive while invalid targets are 
   const evidence = ["turn-1"];
 
   const movie = await service.applyAiInference({
+    analysisKey: "additive-movie",
     participantId: "participant-1",
     targetFactId: null,
     kind: "interest",
@@ -367,6 +417,7 @@ test("untargeted same-kind inferences remain additive while invalid targets are 
     evidenceTurnIds: evidence,
   });
   const music = await service.applyAiInference({
+    analysisKey: "additive-music",
     participantId: "participant-1",
     targetFactId: null,
     kind: "interest",
@@ -377,6 +428,7 @@ test("untargeted same-kind inferences remain additive while invalid targets are 
     evidenceTurnIds: evidence,
   });
   await service.applyAiInference({
+    analysisKey: "additive-friday-movie",
     participantId: "participant-1",
     targetFactId: null,
     kind: "repeated_event",
@@ -387,6 +439,7 @@ test("untargeted same-kind inferences remain additive while invalid targets are 
     evidenceTurnIds: evidence,
   });
   await service.applyAiInference({
+    analysisKey: "additive-monthly-exhibit",
     participantId: "participant-1",
     targetFactId: null,
     kind: "repeated_event",
@@ -415,6 +468,7 @@ test("untargeted same-kind inferences remain additive while invalid targets are 
     action: "edit",
   });
   await expect(service.applyAiInference({
+    analysisKey: "invalid-cross-participant",
     participantId: "participant-1",
     targetFactId: otherParticipant.id,
     kind: "interest",
@@ -425,6 +479,7 @@ test("untargeted same-kind inferences remain additive while invalid targets are 
     evidenceTurnIds: evidence,
   })).rejects.toThrow("same participant and fact kind");
   await expect(service.applyAiInference({
+    analysisKey: "invalid-cross-kind",
     participantId: "participant-1",
     targetFactId: movie.id,
     kind: "repeated_event",
@@ -449,6 +504,7 @@ test("a targeted contradiction to a locked fact becomes a proposal", async () =>
   });
 
   const result = await service.applyAiInference({
+    analysisKey: "locked-contradiction",
     participantId: "participant-1",
     targetFactId: locked.id,
     kind: "interest",
@@ -545,7 +601,8 @@ test("an incomplete extraction retries idempotently and repairs facts and room m
   const dependencies = { repository: memoryRepository, profileRepository, gateway };
 
   await expect(extractRoomMemory("room-retry", dependencies)).rejects.toThrow("room summary unavailable");
-  expect(profileRepository.facts).toHaveLength(1);
+  expect(profileRepository.facts).toHaveLength(0);
+  expect(profileRepository.revisions).toHaveLength(0);
   expect(memoryRepository.roomMemory).toBeUndefined();
   expect(decryptJson<ChunkMemoryPayload>(memoryRepository.chunkUpdates.at(-1)!.encryptedSummary)
     .analysisComplete).toBe(false);
@@ -563,6 +620,207 @@ test("an incomplete extraction retries idempotently and repairs facts and room m
     version: 1,
     topics: [expect.objectContaining({ key: "movies", childChunkIds: ["chunk-retry"] })],
     summary: "영화 이야기가 자주 등장하는 친근한 방",
+  });
+});
+
+test("retry replaces a stale locked-fact proposal from the same chunk analysis", async () => {
+  const profileRepository = new InMemoryProfileRepository();
+  const profileService = new ProfileService(profileRepository);
+  const locked = await profileService.applyProfileEdit({
+    participantId: "participant-1",
+    kind: "speech_pattern",
+    value: "장난이 적다",
+    conditions: [],
+    exceptions: [],
+    action: "edit",
+  });
+  const chunk: MemoryChunk = {
+    id: "chunk-locked-retry",
+    roomId: "room-locked-retry",
+    startedAt: new Date("2026-08-07T00:00:00Z"),
+    endedAt: new Date("2026-08-07T00:02:00Z"),
+    turns: [{
+      id: "turn-locked-retry",
+      participantId: "participant-1",
+      participantName: "민수",
+      messages: [{ kind: "text", text: "민수는 오늘 장난을 많이 했다" }],
+    }],
+  };
+  const chunkAnalysis = {
+    topicTags: ["농담"],
+    eventTypes: ["daily_chat"],
+    emotions: ["즐거움"],
+    relationshipSignals: ["친밀함"],
+    summary: "장난을 주고받았다",
+    candidateProfileFacts: [{
+      participantId: "participant-1",
+      targetFactId: locked.id,
+      kind: "speech_pattern",
+      value: "장난이 많다",
+      conditions: [],
+      exceptions: [],
+      confidence: 0.91,
+      evidenceTurnIds: ["turn-locked-retry"],
+    }],
+  };
+  const topics = {
+    topics: [{
+      key: "jokes",
+      tags: ["농담"],
+      childChunkIds: ["chunk-locked-retry"],
+      summary: "농담을 주고받는 대화",
+    }],
+  };
+  const memoryRepository = new InMemoryMemoryRepository([chunk]);
+  memoryRepository.failNextRoomUpsert();
+  const gateway = new FakeGateway([
+    chunkAnalysis,
+    topics,
+    { summary: "농담이 자주 등장하는 방" },
+    chunkAnalysis,
+    topics,
+    { summary: "농담이 자주 등장하는 방" },
+  ]);
+  const dependencies = { repository: memoryRepository, profileRepository, gateway };
+
+  await expect(extractRoomMemory("room-locked-retry", dependencies))
+    .rejects.toThrow("room memory write unavailable");
+  expect(profileRepository.revisions.filter((revision) => (
+    revision.source === "ai_change_proposal"
+  ))).toHaveLength(1);
+
+  await expect(extractRoomMemory("room-locked-retry", dependencies)).resolves.toBeDefined();
+  expect(profileRepository.revisions.filter((revision) => (
+    revision.source === "ai_change_proposal"
+  ))).toHaveLength(1);
+  expect((await profileService.listProfileFacts("participant-1"))[0]).toMatchObject({
+    id: locked.id,
+    value: "장난이 적다",
+    locked: true,
+    source: "user_edited",
+  });
+});
+
+test("divergent retry output replaces only additive facts owned by that analysis", async () => {
+  const profileRepository = new InMemoryProfileRepository();
+  const profileService = new ProfileService(profileRepository);
+  const unrelated = await profileService.applyAiInference({
+    analysisKey: "unrelated-analysis",
+    participantId: "participant-1",
+    targetFactId: null,
+    kind: "interest",
+    value: "독서를 좋아한다",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.8,
+    evidenceTurnIds: ["unrelated-turn"],
+  });
+  const locked = await profileService.applyProfileEdit({
+    participantId: "participant-1",
+    kind: "sensitive_topic",
+    value: "가족 이야기는 피한다",
+    conditions: [],
+    exceptions: [],
+    action: "edit",
+  });
+  const chunk: MemoryChunk = {
+    id: "chunk-divergent",
+    roomId: "room-divergent",
+    startedAt: new Date("2026-08-07T00:00:00Z"),
+    endedAt: new Date("2026-08-07T00:02:00Z"),
+    turns: [{
+      id: "turn-divergent",
+      participantId: "participant-1",
+      participantName: "민수",
+      messages: [{ kind: "text", text: "민수는 주말 취미 이야기를 했다" }],
+    }],
+  };
+  const analysis = (value: string) => ({
+    topicTags: ["취미"],
+    eventTypes: ["daily_chat"],
+    emotions: ["흥미"],
+    relationshipSignals: [],
+    summary: "주말 취미를 이야기했다",
+    candidateProfileFacts: [{
+      participantId: "participant-1",
+      targetFactId: null,
+      kind: "interest",
+      value,
+      conditions: [],
+      exceptions: [],
+      confidence: 0.77,
+      evidenceTurnIds: ["turn-divergent"],
+    }],
+  });
+  const topics = {
+    topics: [{
+      key: "hobbies",
+      tags: ["취미"],
+      childChunkIds: ["chunk-divergent"],
+      summary: "취미를 공유한다",
+    }],
+  };
+  const memoryRepository = new InMemoryMemoryRepository([chunk]);
+  memoryRepository.failNextRoomUpsert();
+  const gateway = new FakeGateway([
+    analysis("등산을 좋아한다"),
+    topics,
+    { summary: "취미를 공유하는 방" },
+    analysis("사진 촬영을 좋아한다"),
+    topics,
+    { summary: "취미를 공유하는 방" },
+  ]);
+  const dependencies = { repository: memoryRepository, profileRepository, gateway };
+
+  await expect(extractRoomMemory("room-divergent", dependencies))
+    .rejects.toThrow("room memory write unavailable");
+  expect((await profileService.listProfileFacts("participant-1")).map((fact) => fact.value))
+    .toContain("등산을 좋아한다");
+
+  await expect(extractRoomMemory("room-divergent", dependencies)).resolves.toBeDefined();
+  const facts = await profileService.listProfileFacts("participant-1");
+  expect(facts.map((fact) => fact.value)).toEqual(expect.arrayContaining([
+    "독서를 좋아한다",
+    "가족 이야기는 피한다",
+    "사진 촬영을 좋아한다",
+  ]));
+  expect(facts.map((fact) => fact.value)).not.toContain("등산을 좋아한다");
+  expect(facts.filter((fact) => fact.kind === "interest")).toHaveLength(2);
+  expect(facts).toContainEqual(expect.objectContaining({ id: unrelated.id }));
+  expect(facts).toContainEqual(expect.objectContaining({ id: locked.id, locked: true }));
+});
+
+test("legacy encrypted string fact and revision values remain readable", async () => {
+  const repository = new InMemoryProfileRepository();
+  const legacy = await repository.createFact({
+    participantId: "participant-legacy",
+    kind: "interest",
+    encryptedValue: encryptJson("오래된 문자열 값"),
+    encryptedConditions: encryptJson([]),
+    encryptedExceptions: encryptJson([]),
+    evidenceTurnIds: encryptJson(["legacy-turn"]),
+    confidence: 0.6,
+    source: "ai_inference",
+    locked: false,
+  });
+  const revision = await repository.createRevision({
+    profileFactId: legacy.id,
+    encryptedPreviousValue: legacy.encryptedValue,
+    encryptedNextValue: encryptJson("교정된 문자열 값"),
+    encryptedConditions: encryptJson([]),
+    encryptedExceptions: encryptJson([]),
+    source: "ai_change_proposal",
+  });
+  const service = new ProfileService(repository);
+
+  expect((await service.listProfileFacts("participant-legacy"))[0]).toMatchObject({
+    value: "오래된 문자열 값",
+    evidenceTurnIds: ["legacy-turn"],
+  });
+  await expect(service.confirmProfileCorrection("participant-legacy", revision.id)).resolves.toMatchObject({
+    value: "교정된 문자열 값",
+    source: "user_confirmed",
+    locked: true,
   });
 });
 

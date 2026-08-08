@@ -60,6 +60,7 @@ export type ChunkMemoryPayload = {
   emotions: string[];
   relationshipSignals: string[];
   sourceFingerprint: string;
+  analysisKey: string;
   analysisComplete: boolean;
 };
 
@@ -210,6 +211,7 @@ export function createDrizzleMemoryRepository(
             emotions: [],
             relationshipSignals: [],
             sourceFingerprint: "",
+            analysisKey: "",
             analysisComplete: false,
           }
           : decoded;
@@ -219,6 +221,7 @@ export function createDrizzleMemoryRepository(
           emotions: payload.emotions ?? [],
           relationshipSignals: payload.relationshipSignals ?? [],
           sourceFingerprint: payload.sourceFingerprint ?? "",
+          analysisKey: payload.analysisKey ?? "",
           analysisComplete: payload.analysisComplete === true,
           topicTags: decryptJson<string[]>(row.encryptedTopicTags),
           eventTypes: decryptJson<string[]>(row.encryptedEventTypes),
@@ -316,9 +319,15 @@ function chunkSourceFingerprint(
   return createHash("sha256").update(redactChunkForEmbedding(chunk, roomParticipants)).digest("hex");
 }
 
+function chunkAnalysisKey(roomId: string, chunkId: string, sourceFingerprint: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify([roomId, chunkId, sourceFingerprint]))
+    .digest("hex");
+}
+
 function validateEvidence(
   chunk: MemoryChunk,
-  fact: AiProfileFact,
+  fact: Omit<AiProfileFact, "analysisKey">,
   roomParticipants: RoomParticipantIdentity[],
   existingFacts: ProfileFactView[],
 ): void {
@@ -374,13 +383,24 @@ export async function extractRoomMemory(
 
   const roomParticipants = await dependencies.repository.listRoomParticipants(roomId);
   const profileService = new ProfileService(dependencies.profileRepository);
+  const preparedChunks = pendingChunks.map((chunk) => {
+    const redactedText = redactChunkForEmbedding(chunk, roomParticipants);
+    const sourceFingerprint = chunkSourceFingerprint(chunk, roomParticipants);
+    return {
+      chunk,
+      redactedText,
+      sourceFingerprint,
+      analysisKey: chunkAnalysisKey(roomId, chunk.id, sourceFingerprint),
+    };
+  });
+  const pendingAnalysisKeys = preparedChunks.map((item) => item.analysisKey);
   const existingProfileFacts = (await Promise.all(roomParticipants.map((participant) => (
-    profileService.listProfileFacts(participant.id)
+    profileService.listProfileFacts(participant.id, pendingAnalysisKeys)
   )))).flat();
 
   const analyses = [];
-  for (const chunk of pendingChunks) {
-    const redactedText = redactChunkForEmbedding(chunk, roomParticipants);
+  for (const prepared of preparedChunks) {
+    const { chunk, redactedText, sourceFingerprint, analysisKey } = prepared;
     const analysis = await dependencies.gateway.extract({
       purpose: "analysis",
       schemaName: "conversation_chunk_memory",
@@ -407,13 +427,11 @@ export async function extractRoomMemory(
     for (const fact of analysis.candidateProfileFacts) {
       validateEvidence(chunk, fact, roomParticipants, existingProfileFacts);
     }
-    analyses.push({ chunk, redactedText, analysis });
+    analyses.push({ chunk, redactedText, sourceFingerprint, analysisKey, analysis });
   }
 
   const embeddings = await dependencies.gateway.embed(analyses.map((item) => item.redactedText));
   if (embeddings.length !== analyses.length) throw new Error("Embedding count did not match chunk count");
-
-  const proposedFacts: ProfileFactView[] = [];
 
   const updates = analyses.map((item, index) => {
     const embedding = embeddings[index];
@@ -436,20 +454,14 @@ export async function extractRoomMemory(
         summary: update.item.analysis.summary,
         emotions: update.item.analysis.emotions,
         relationshipSignals: update.item.analysis.relationshipSignals,
-        sourceFingerprint: chunkSourceFingerprint(update.item.chunk, roomParticipants),
+        sourceFingerprint: update.item.sourceFingerprint,
+        analysisKey: update.item.analysisKey,
         analysisComplete: false,
       }),
       encryptedTopicTags: update.encryptedTopicTags,
       encryptedEventTypes: update.encryptedEventTypes,
       embedding: update.embedding,
     });
-  }
-
-  for (let index = 0; index < analyses.length; index += 1) {
-    const item = analyses[index]!;
-    for (const candidate of item.analysis.candidateProfileFacts) {
-      proposedFacts.push(await profileService.applyAiInference(candidate));
-    }
   }
 
   const storedChildMemories = await dependencies.repository.listChunkMemories(roomId);
@@ -466,6 +478,7 @@ export async function extractRoomMemory(
       roomId,
       childMemories: storedChildMemories.map(({
         sourceFingerprint: _sourceFingerprint,
+        analysisKey: _analysisKey,
         analysisComplete: _analysisComplete,
         ...memory
       }) => memory),
@@ -486,6 +499,20 @@ export async function extractRoomMemory(
       topicMemories: topicResult.topics,
     }),
   });
+
+  // No profile writes occur until every model and embedding call succeeds.
+  // Replacement cleanup and replay share one profile transaction.
+  const profileOperations = analyses.flatMap((item) => (
+    item.analysis.candidateProfileFacts.map((candidate) => ({
+      ...candidate,
+      analysisKey: item.analysisKey,
+    }))
+  ));
+  const proposedFacts: ProfileFactView[] = await profileService.replaceAiAnalysis(
+    analyses.map((item) => item.analysisKey),
+    profileOperations,
+  );
+
   await dependencies.repository.upsertRoomMemory(roomId, encryptJson<RoomMemoryPayload>({
     version: 1,
     topics: topicResult.topics,
@@ -502,7 +529,8 @@ export async function extractRoomMemory(
         summary: update.item.analysis.summary,
         emotions: update.item.analysis.emotions,
         relationshipSignals: update.item.analysis.relationshipSignals,
-        sourceFingerprint: chunkSourceFingerprint(update.item.chunk, roomParticipants),
+        sourceFingerprint: update.item.sourceFingerprint,
+        analysisKey: update.item.analysisKey,
         analysisComplete: true,
       }),
       encryptedTopicTags: update.encryptedTopicTags,
