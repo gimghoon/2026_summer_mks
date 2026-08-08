@@ -39,3 +39,19 @@ Implemented and verified in the assigned worktree.
 ## Schema-limited follow-up
 
 This is a single-user application: sessions identify access to the private deployment, while the schema has no account table or account-level indirectness setting. Consequently level 3 is the conservative application default. Imports also parse and persist conversation data directly in PostgreSQL; no upload-blob table or blob key currently exists. The deletion handler has a cleanup queue boundary, which is a no-op until a blob store is added; the transaction already deletes every currently persisted room record through schema cascades.
+
+## Fix Round 1: Submitted Context and Fact Validation
+
+- The production context adapter now appends a synthetic newest turn containing the submitted pasted conversation, situation, and intent before calling adaptive context selection. Its judge requires sufficient submitted detail, so a semantically complete new-room request can generate while sparse requests still produce one clarification even if old room history is long.
+- Replaced the production no-op fact validator with `validatesReplyFact`. It compares generated text only against decrypted reviewed profile facts, room memory, selected current turns, and retrieved context; it currently rejects explicit opposite-polarity claims sharing a factual anchor (for example, a reviewed `likes coffee` fact versus a generated `dislikes coffee` claim). It returns only a boolean, preserving the reply service's opaque `FACT_CONTRADICTION` retry metadata and never logging private text.
+- Added `tests/integration/reply-production-policy.test.ts` to exercise the production context policy for complete and sparse submitted exchanges, profile/current-context contradictions, and a generation retry that carries only `FACT_CONTRADICTION` rather than rejected candidate text.
+
+### Fix round verification
+
+| Command | Outcome |
+| --- | --- |
+| `node node_modules/vitest/vitest.mjs run tests/integration/reply-production-policy.test.ts tests/integration/replies-route.test.ts tests/integration/reply-service.test.ts` | Passed: 3 files, 24 tests. |
+| `node node_modules/typescript/bin/tsc --noEmit` | Passed. |
+| `node node_modules/vitest/vitest.mjs run` | Passed: 20 files, 128 tests. |
+| `node node_modules/next/dist/bin/next build` | Passed. |
+| `git diff --check` | Passed with no whitespace errors. |

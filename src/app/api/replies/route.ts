@@ -20,6 +20,11 @@ import {
   type ReplyRouteDependencies,
 } from "@/domain/replies/reply-api-handler";
 import { selectCurrentContext } from "@/domain/replies/context-expander";
+import {
+  createSubmittedContextJudge,
+  submittedCurrentTurn,
+  validatesReplyFact,
+} from "@/domain/replies/reply-production-policy";
 import { OpenAIModelGateway } from "@/domain/models/openai-gateway";
 import { listProfileFacts } from "@/domain/profiles/profile-service";
 import {
@@ -74,13 +79,14 @@ async function replyContext(
       .from(roomMemories).where(eq(roomMemories.roomId, command.roomId)),
     listProfileFacts(command.participantId),
   ]);
+  const submittedTurn = submittedCurrentTurn(command);
   const currentContext = await selectCurrentContext({
-    turns: allTurns,
+    // The current pasted exchange is always the newest context. Saved turns
+    // provide expansion support, but cannot make a sparse new request appear
+    // sufficient on their own.
+    turns: [...allTurns, submittedTurn],
     fullChunkStart: 0,
-    judge: async (candidateTurns) => ({
-      sufficient: candidateTurns.length >= 2,
-      ambiguityReasons: candidateTurns.length >= 2 ? [] : ["low_information"],
-    }),
+    judge: createSubmittedContextJudge(command),
   });
   const roomMemory = memoryRows[0]
     ? (() => {
@@ -158,7 +164,7 @@ function productionDependencies(): ReplyRouteDependencies {
       return generateReplies(command, {
         gateway,
         contextProvider: { load: (currentCommand) => replyContext(currentCommand, relationship, gateway) },
-        factValidator: () => true,
+        factValidator: validatesReplyFact,
       });
     },
     async persist({ command, relationship, candidates }) {
