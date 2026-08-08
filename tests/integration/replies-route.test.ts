@@ -65,6 +65,17 @@ test("returns exactly three candidates and uses the saved default indirectness",
   }));
 });
 
+test("uses an explicit per-request relationship override for policy generation and persistence", async () => {
+  const deps = dependencies();
+  const handler = createReplyPostHandler(deps);
+
+  const response = await handler(request(validBody({ relationship: "girlfriend" })));
+
+  expect(response.status).toBe(200);
+  expect(deps.generate).toHaveBeenCalledWith(expect.anything(), "girlfriend");
+  expect(deps.persist).toHaveBeenCalledWith(expect.objectContaining({ relationship: "girlfriend" }));
+});
+
 test("enforces the pasted conversation limit before generation", async () => {
   const deps = dependencies();
   const handler = createReplyPostHandler(deps);

@@ -19,3 +19,11 @@
 ## Read-model note
 
 Tasks 4/6/9 did not expose a room-list or participant-list endpoint, and an import response only carries a room ID. A read-only server helper was necessary so a reload can still render participant names. It is session-gated by the room Server Components and decrypts only the fields displayed in the private UI.
+
+## Fix round 1
+
+- Relationship mode is now an explicit, validated per-request override and is passed through reply policy generation and persistence. Participant links seed the control from the stored style.
+- Edited reply cards retain their local draft before copying. Copy states distinguish success, unavailable clipboard support, and denied clipboard access.
+- Importing now pauses to display unparsed lines. The authenticated analysis hook creates deterministic, idempotent time chunks before calling `extractRoomMemory`; incomplete extraction remains retryable. Room cards report ready only when persisted chunks and room memory are present.
+- `/settings` stores the browser-local default indirectness (clearly labelled), and `/profiles` provides a named profile directory.
+- Profile Server Components and every profile GET/edit/correction request enforce the room–participant relationship before reading or changing facts.

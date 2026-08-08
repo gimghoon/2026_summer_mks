@@ -20,6 +20,7 @@ const replyBodySchema = z.object({
   situation: z.string().trim().min(1).max(2_000),
   intent: z.string().trim().min(1).max(1_000),
   indirectness: z.number().int().min(1).max(5).optional(),
+  relationship: z.enum(["female_friend", "girlfriend"]).optional(),
 }).strict();
 
 export type ReplyBody = z.infer<typeof replyBodySchema>;
@@ -117,9 +118,10 @@ export function createReplyPostHandler(dependencies: ReplyRouteDependencies) {
       indirectness: (body.indirectness as IndirectnessLevel | undefined) ?? DEFAULT_INDIRECTNESS,
     };
     try {
-      const result = await dependencies.generate(command, participant.relationship);
+      const relationship = body.relationship ?? participant.relationship;
+      const result = await dependencies.generate(command, relationship);
       if (result.kind === "clarification_required") return Response.json(result, { status: 409 });
-      await dependencies.persist({ command, relationship: participant.relationship, candidates: result.candidates });
+      await dependencies.persist({ command, relationship, candidates: result.candidates });
       return Response.json({ candidates: result.candidates });
     } catch (error) {
       dependencies.log("reply_request_failed", {

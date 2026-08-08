@@ -1,0 +1,22 @@
+import { eq } from "drizzle-orm";
+
+import { getDb } from "@/db/client";
+import { rooms } from "@/db/schema";
+import { requireSession } from "@/domain/auth/session";
+import { analyzeImportedRoom } from "@/domain/memory/room-analysis-orchestrator";
+
+type Context = { params: Promise<{ roomId: string }> };
+
+/** Retry-safe analysis hook: incomplete chunks remain pending until extraction completes. */
+export async function POST(request: Request, context: Context): Promise<Response> {
+  await requireSession(request);
+  const { roomId } = await context.params;
+  const found = await getDb().select({ id: rooms.id }).from(rooms).where(eq(rooms.id, roomId));
+  if (!found[0]) return new Response("Not found", { status: 404 });
+  try {
+    const result = await analyzeImportedRoom(roomId);
+    return Response.json({ roomId, status: result.updatedChunkIds.length > 0 ? "ready" : "pending", updatedChunks: result.updatedChunkIds.length });
+  } catch {
+    return new Response("Unable to analyze room", { status: 503 });
+  }
+}

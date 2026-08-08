@@ -5,7 +5,7 @@ import { kindLabels, type ProfileFact } from "./profile-card";
 
 const kinds = Object.keys(kindLabels);
 
-export function ProfileEditor({ participantId, fact, onSaved, onClose }: { participantId: string; fact?: ProfileFact; onSaved?: (fact: ProfileFact) => void; onClose?: () => void }) {
+export function ProfileEditor({ roomId, participantId, fact, onSaved, onClose }: { roomId: string; participantId: string; fact?: ProfileFact; onSaved?: (fact: ProfileFact) => void; onClose?: () => void }) {
   const [kind, setKind] = useState(fact?.kind ?? "personality_tendency");
   const [value, setValue] = useState(fact?.value ?? "");
   const [conditions, setConditions] = useState(fact?.conditions.join(", ") ?? "");
@@ -14,7 +14,7 @@ export function ProfileEditor({ participantId, fact, onSaved, onClose }: { parti
   useEffect(() => { setKind(fact?.kind ?? "personality_tendency"); setValue(fact?.value ?? ""); setConditions(fact?.conditions.join(", ") ?? ""); setExceptions(fact?.exceptions.join(", ") ?? ""); }, [fact]);
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setSaving(true); setError("");
-    try { const response = await fetch(`/api/profiles/${participantId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ factId: fact?.id, kind, value, conditions: conditions.split(",").map((item) => item.trim()).filter(Boolean), exceptions: exceptions.split(",").map((item) => item.trim()).filter(Boolean), action: "edit" }) });
+    try { const response = await fetch(`/api/profiles/${participantId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ roomId, factId: fact?.id, kind, value, conditions: conditions.split(",").map((item) => item.trim()).filter(Boolean), exceptions: exceptions.split(",").map((item) => item.trim()).filter(Boolean), action: "edit" }) });
       if (!response.ok) throw new Error("저장하지 못했어요. 잠시 후 다시 시도해 주세요."); onSaved?.(await response.json()); onClose?.();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "저장하지 못했어요."); } finally { setSaving(false); }
   }

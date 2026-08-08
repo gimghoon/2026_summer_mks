@@ -10,4 +10,5 @@ export type RoomView = {
   title: string;
   updatedAt: string;
   participants: RoomParticipantView[];
+  analysisStatus: "ready" | "needs_analysis";
 };
