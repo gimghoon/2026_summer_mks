@@ -5,7 +5,8 @@ import { getRoomView } from "@/domain/rooms/room-read-service";
 
 export default async function ProfilePage({ params }: { params: Promise<{ roomId: string; participantId: string }> }) {
   await requireSession(); const { roomId, participantId } = await params; const room = await getRoomView(roomId);
-  const participant = room?.participants.find((person) => person.id === participantId && !person.isSelf);
+  if (!room || room.analysisStatus !== "ready") notFound();
+  const participant = room.participants.find((person) => person.id === participantId && !person.isSelf);
   if (!participant) notFound();
   return <ProfileWorkspace roomId={roomId} participantId={participantId} relationship={participant.relationshipStyle ?? "female_friend"} />;
 }

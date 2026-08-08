@@ -33,6 +33,7 @@ import {
 } from "@/domain/replies/reply-service";
 import { VectorContextRepository } from "@/domain/retrieval/vector-context-repository";
 import { safeLog } from "@/lib/logger";
+import { getRoomView } from "@/domain/rooms/room-read-service";
 
 type StoredRoomMemory = { version?: number; summary?: string } | string;
 type StoredChunkMemory = { summary?: string } | string;
@@ -150,6 +151,7 @@ async function replyContext(
 function productionDependencies(): ReplyRouteDependencies {
   return {
     requireSession,
+    async isRoomReady(roomId) { return (await getRoomView(roomId))?.analysisStatus === "ready"; },
     async loadParticipant({ roomId, participantId }: Pick<ReplyBody, "roomId" | "participantId">) {
       const rows = await getDb().select({ relationshipStyle: participants.relationshipStyle })
         .from(participants)

@@ -34,6 +34,7 @@ function validBody(overrides: Record<string, unknown> = {}) {
 function dependencies(overrides: Record<string, unknown> = {}) {
   return {
     requireSession: vi.fn(async () => {}),
+    isRoomReady: vi.fn(async () => true),
     loadParticipant: vi.fn(async () => ({ relationship: "female_friend" as const })),
     generate: vi.fn(async () => ({ kind: "replies" as const, candidates })),
     persist: vi.fn(async () => {}),
@@ -113,6 +114,15 @@ test("does not generate replies for a participant outside the requested room", a
   const response = await handler(request(validBody()));
 
   expect(response.status).toBe(404);
+  expect(deps.generate).not.toHaveBeenCalled();
+});
+
+test("blocks direct reply generation until room analysis is ready", async () => {
+  const deps = dependencies({ isRoomReady: vi.fn(async () => false) });
+  const response = await createReplyPostHandler(deps)(request(validBody()));
+  expect(response.status).toBe(409);
+  await expect(response.json()).resolves.toEqual({ error: "ANALYSIS_REQUIRED" });
+  expect(deps.loadParticipant).not.toHaveBeenCalled();
   expect(deps.generate).not.toHaveBeenCalled();
 });
 

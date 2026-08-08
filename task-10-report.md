@@ -34,3 +34,7 @@ Tasks 4/6/9 did not expose a room-list or participant-list endpoint, and an impo
 - Unparsed import lines are retained only in `sessionStorage`, keyed by room ID, so a reload can resume the private review without server logging.
 - Room actions now follow the persisted analysis state. Ready requires a room memory and every encrypted chunk to decrypt as complete; pending rooms offer a disabled workflow and retry action.
 - Analysis uses a per-room PostgreSQL transaction advisory lock while ensuring chunks and extracting memory with transaction-scoped repositories, preventing duplicate chunks across concurrent requests.
+
+## Fix round 3
+
+- Analysis readiness is now enforced at every entry point: profile navigation lists only ready rooms, direct profile URLs return not found until ready, and reply generation returns a safe `409 { error: "ANALYSIS_REQUIRED" }` before loading private context or calling the model.

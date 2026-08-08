@@ -27,6 +27,7 @@ export type ReplyBody = z.infer<typeof replyBodySchema>;
 
 export type ReplyRouteDependencies = {
   requireSession: (request: Request) => Promise<void>;
+  isRoomReady: (roomId: string) => Promise<boolean>;
   loadParticipant: (input: Pick<ReplyBody, "roomId" | "participantId">) => Promise<{
     relationship: RelationshipStyle;
   } | null>;
@@ -106,6 +107,9 @@ export function createReplyPostHandler(dependencies: ReplyRouteDependencies) {
         : invalidRequest(parsed.error === "invalid" ? undefined : parsed.error);
     }
     const body = parsed.value;
+    if (!await dependencies.isRoomReady(body.roomId)) {
+      return Response.json({ error: "ANALYSIS_REQUIRED" }, { status: 409 });
+    }
     const participant = await dependencies.loadParticipant(body);
     if (!participant) return new Response("Not found", { status: 404 });
 
