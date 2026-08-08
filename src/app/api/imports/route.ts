@@ -1,12 +1,16 @@
 import { z } from "zod";
 
-import { requireSession } from "@/domain/auth/session";
+import { apiSessionFailure } from "@/domain/auth/session";
 import {
   MAX_IMPORT_FILE_BYTES,
   MAX_IMPORT_REQUEST_BYTES,
 } from "@/domain/imports/import-limits";
 import { importKakaoExport } from "@/domain/imports/import-service";
 import { parseKakaoExport } from "@/domain/kakao/parser";
+import {
+  fixtureModeEnabled,
+  importFixtureRoom,
+} from "@/domain/testing/e2e-fixture-store";
 
 const importFormSchema = z.object({
   selfName: z.string().trim().min(1, "selfName is required"),
@@ -65,7 +69,8 @@ function isMultipartOversizeError(error: unknown): boolean {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  await requireSession(request);
+  const sessionFailure = await apiSessionFailure(request);
+  if (sessionFailure) return sessionFailure;
 
   let formData: FormData;
   try {
@@ -95,6 +100,8 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "Invalid import request", issues: { formErrors: ["conversation title is required"] } }, { status: 400 });
   }
 
-  const summary = await importKakaoExport({ title, selfName: form.data.selfName, rawText });
+  const summary = fixtureModeEnabled()
+    ? importFixtureRoom({ title, selfName: form.data.selfName, rawText })
+    : await importKakaoExport({ title, selfName: form.data.selfName, rawText });
   return Response.json(summary, { status: 201 });
 }

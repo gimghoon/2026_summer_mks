@@ -1208,5 +1208,5 @@ test("profile API routes require an authenticated session before reading profile
 
   await expect(getProfileRoute(request, {
     params: Promise.resolve({ participantId: "participant-1" }),
-  })).rejects.toMatchObject({ status: 401 });
+  })).resolves.toMatchObject({ status: 401 });
 });

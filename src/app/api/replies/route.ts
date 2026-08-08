@@ -34,6 +34,12 @@ import {
 import { VectorContextRepository } from "@/domain/retrieval/vector-context-repository";
 import { safeLog } from "@/lib/logger";
 import { getRoomView } from "@/domain/rooms/room-read-service";
+import {
+  fixtureModeEnabled,
+  fixtureParticipantBelongsToRoom,
+  generateFixtureReplies,
+  getFixtureRoom,
+} from "@/domain/testing/e2e-fixture-store";
 
 type StoredRoomMemory = { version?: number; summary?: string } | string;
 type StoredChunkMemory = { summary?: string } | string;
@@ -199,4 +205,28 @@ function productionDependencies(): ReplyRouteDependencies {
   };
 }
 
-export const POST = createReplyPostHandler(productionDependencies());
+function fixtureDependencies(): ReplyRouteDependencies {
+  return {
+    requireSession,
+    async isRoomReady(roomId) {
+      return getFixtureRoom(roomId)?.analysisStatus === "ready";
+    },
+    async loadParticipant({ roomId, participantId }) {
+      return fixtureParticipantBelongsToRoom(roomId, participantId)
+        ? { relationship: "female_friend" }
+        : null;
+    },
+    async generate(command) {
+      return generateFixtureReplies(command);
+    },
+    async persist() {
+      // The fixture generator stores encrypted request and candidate payloads
+      // in its in-memory adapter before returning the browser response.
+    },
+    log: safeLog,
+  };
+}
+
+export const POST = createReplyPostHandler(
+  fixtureModeEnabled() ? fixtureDependencies() : productionDependencies(),
+);

@@ -1,25 +1,44 @@
 import { InvalidPasswordError, createSessionCookie } from "@/domain/auth/session";
+import { readBoundedText } from "@/lib/http/request-body";
 
-async function submittedPassword(request: Request): Promise<string | null> {
+const MAX_LOGIN_REQUEST_BYTES = 8 * 1024;
+
+async function submittedPassword(request: Request): Promise<
+  { ok: true; password: string | null } | { ok: false; tooLarge: boolean }
+> {
+  const body = await readBoundedText(request, MAX_LOGIN_REQUEST_BYTES);
+  if (!body.ok) return { ok: false, tooLarge: body.error === "too_large" };
   const contentType = request.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
-    const body = await request.json() as { password?: unknown };
-    return typeof body.password === "string" ? body.password : null;
+    try {
+      const parsed = JSON.parse(body.value) as { password?: unknown };
+      return { ok: true, password: typeof parsed.password === "string" ? parsed.password : null };
+    } catch {
+      return { ok: false, tooLarge: false };
+    }
   }
 
-  const body = await request.formData();
-  const password = body.get("password");
-  return typeof password === "string" ? password : null;
+  if (!contentType.includes("application/x-www-form-urlencoded")) {
+    return { ok: false, tooLarge: false };
+  }
+  const password = new URLSearchParams(body.value).get("password");
+  return { ok: true, password };
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const password = await submittedPassword(request);
-  if (password === null) {
+  const submission = await submittedPassword(request);
+  if (!submission.ok) {
+    return new Response(
+      submission.tooLarge ? "Login request is too large" : "Invalid login request",
+      { status: submission.tooLarge ? 413 : 400 },
+    );
+  }
+  if (submission.password === null) {
     return new Response("Password is required", { status: 400 });
   }
 
   try {
-    const sessionCookie = await createSessionCookie(password);
+    const sessionCookie = await createSessionCookie(submission.password);
     return new Response(null, {
       status: 303,
       headers: {

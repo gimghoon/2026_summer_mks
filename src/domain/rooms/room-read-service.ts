@@ -5,6 +5,11 @@ import { desc, eq } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { chunks, participants, roomMemories, rooms } from "@/db/schema";
 import { decryptJson } from "@/domain/crypto/encrypted-json";
+import {
+  fixtureModeEnabled,
+  getFixtureRoom,
+  listFixtureRooms,
+} from "@/domain/testing/e2e-fixture-store";
 import type { RoomParticipantView, RoomView } from "./room-read-types";
 
 export type { RoomParticipantView, RoomView } from "./room-read-types";
@@ -15,6 +20,7 @@ function readableRoom(row: { id: string; encryptedTitle: string; updatedAt: Date
 
 /** Private page read model. Authentication stays at the Server Component boundary. */
 export async function listRoomViews(): Promise<RoomView[]> {
+  if (fixtureModeEnabled()) return listFixtureRooms();
   const database = getDb();
   const roomRows = await database.select({ id: rooms.id, encryptedTitle: rooms.encryptedTitle, updatedAt: rooms.updatedAt }).from(rooms).orderBy(desc(rooms.updatedAt));
   if (!roomRows.length) return [];
@@ -26,6 +32,7 @@ export async function listRoomViews(): Promise<RoomView[]> {
 }
 
 export async function getRoomView(roomId: string): Promise<RoomView | null> {
+  if (fixtureModeEnabled()) return getFixtureRoom(roomId);
   const database = getDb();
   const rows = await database.select({ id: rooms.id, encryptedTitle: rooms.encryptedTitle, updatedAt: rooms.updatedAt }).from(rooms).where(eq(rooms.id, roomId));
   const room = rows[0];

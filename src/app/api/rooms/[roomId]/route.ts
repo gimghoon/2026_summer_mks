@@ -8,6 +8,10 @@ import {
   type RoomDeletionDependencies,
 } from "@/domain/rooms/room-deletion-api-handler";
 import { safeLog } from "@/lib/logger";
+import {
+  deleteFixtureRoom,
+  fixtureModeEnabled,
+} from "@/domain/testing/e2e-fixture-store";
 
 function productionDependencies(): RoomDeletionDependencies {
   return {
@@ -25,4 +29,17 @@ function productionDependencies(): RoomDeletionDependencies {
   };
 }
 
-export const DELETE = createRoomDeleteHandler(productionDependencies());
+function fixtureDependencies(): RoomDeletionDependencies {
+  return {
+    requireSession,
+    async deleteRoom(roomId) {
+      return deleteFixtureRoom(roomId);
+    },
+    async enqueueUploadBlobDeletion() {},
+    log: safeLog,
+  };
+}
+
+export const DELETE = createRoomDeleteHandler(
+  fixtureModeEnabled() ? fixtureDependencies() : productionDependencies(),
+);

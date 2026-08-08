@@ -127,14 +127,16 @@ test("blocks direct reply generation until room analysis is ready", async () => 
 });
 
 test("does not expose private generation errors", async () => {
+  const privateMessage = "민수야 오늘 홍대에서 한 비밀 얘기는 남기지 마";
   const deps = dependencies({
     generate: vi.fn(async () => { throw new Error("PRIVATE_CONVERSATION_TEXT"); }),
   });
   const handler = createReplyPostHandler(deps);
 
-  const response = await handler(request(validBody()));
+  const response = await handler(request(validBody({ pastedConversation: privateMessage })));
 
   expect(response.status).toBe(500);
   expect(await response.text()).not.toContain("PRIVATE_CONVERSATION_TEXT");
   expect(deps.log).toHaveBeenCalledWith("reply_request_failed", expect.not.objectContaining({ text: expect.anything() }));
+  expect(JSON.stringify(deps.log.mock.calls)).not.toMatch(/PRIVATE_CONVERSATION_TEXT|민수|홍대|비밀/u);
 });

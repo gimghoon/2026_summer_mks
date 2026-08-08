@@ -139,3 +139,14 @@ export async function requireSession(request?: Request): Promise<void> {
 
   redirect("/login");
 }
+
+/** Route-handler bridge: preserve auth-first processing and return the 401 response. */
+export async function apiSessionFailure(request: Request): Promise<Response | null> {
+  try {
+    await requireSession(request);
+    return null;
+  } catch (error) {
+    if (error instanceof Response) return error;
+    throw error;
+  }
+}
