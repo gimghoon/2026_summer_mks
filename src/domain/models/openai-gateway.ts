@@ -81,7 +81,7 @@ export class OpenAIModelGateway implements ModelGateway {
 
   async extract<T>(request: StructuredModelRequest<T>): Promise<T> {
     const response = await withOneRetry(() => this.client.responses.create({
-      model: this.analysisModel,
+      model: request.purpose === "analysis" ? this.analysisModel : this.replyModel,
       instructions: request.system,
       input: request.input,
       text: {

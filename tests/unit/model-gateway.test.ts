@@ -28,6 +28,7 @@ test("uses the analysis model and strict structured output format", async () => 
   const gateway = new OpenAIModelGateway({ client, env: gatewayEnv });
 
   const result = await gateway.extract({
+    purpose: "analysis",
     system: "Summarize safely",
     input: "Conversation input",
     schemaName: "conversation_topic",
@@ -60,6 +61,7 @@ test.each([
 
   try {
     await gateway.extract({
+      purpose: "analysis",
       system: "PRIVATE_SYSTEM_PROMPT",
       input: "PRIVATE_INPUT_TEXT",
       schemaName: "conversation_topic",
@@ -80,6 +82,7 @@ test.each([429, 503])("retries status %i once", async (status) => {
   const gateway = new OpenAIModelGateway({ client, env: gatewayEnv });
 
   await expect(gateway.extract({
+    purpose: "analysis",
     system: "system",
     input: "input",
     schemaName: "conversation_topic",
@@ -95,6 +98,7 @@ test("does not retry non-transient failures", async () => {
   const gateway = new OpenAIModelGateway({ client, env: gatewayEnv });
 
   await expect(gateway.extract({
+    purpose: "analysis",
     system: "system",
     input: "input",
     schemaName: "conversation_topic",
@@ -110,12 +114,56 @@ test("stops after one retry when transient failures continue", async () => {
   const gateway = new OpenAIModelGateway({ client, env: gatewayEnv });
 
   await expect(gateway.extract({
+    purpose: "analysis",
     system: "system",
     input: "input",
     schemaName: "conversation_topic",
     schema: z.object({ topic: z.string() }),
   })).rejects.toBe(failure);
   expect(responsesCreate).toHaveBeenCalledTimes(2);
+});
+
+test("routes reply extraction through the reply model and the same retry pipeline", async () => {
+  const { client, responsesCreate } = createClient();
+  responsesCreate
+    .mockRejectedValueOnce(Object.assign(new Error("temporary"), { status: 503 }))
+    .mockResolvedValueOnce({ output_text: JSON.stringify({ reply: "알겠어~" }) });
+  const gateway = new OpenAIModelGateway({ client, env: gatewayEnv });
+
+  await expect(gateway.extract({
+    purpose: "reply",
+    system: "system",
+    input: "input",
+    schemaName: "reply_candidate",
+    schema: z.object({ reply: z.string() }),
+  })).resolves.toEqual({ reply: "알겠어~" });
+  expect(responsesCreate).toHaveBeenCalledTimes(2);
+  expect(responsesCreate.mock.calls.map(([request]) => request.model)).toEqual([
+    "reply-test-model",
+    "reply-test-model",
+  ]);
+});
+
+test("validates reply output without exposing prompt or response text", async () => {
+  const { client, responsesCreate } = createClient();
+  responsesCreate.mockResolvedValue({
+    output_text: JSON.stringify({ reply: 42, private: "PRIVATE_REPLY_RESPONSE" }),
+  });
+  const gateway = new OpenAIModelGateway({ client, env: gatewayEnv });
+
+  try {
+    await gateway.extract({
+      purpose: "reply",
+      system: "PRIVATE_REPLY_SYSTEM",
+      input: "PRIVATE_REPLY_INPUT",
+      schemaName: "reply_candidate",
+      schema: z.object({ reply: z.string() }),
+    });
+    expect.unreachable("invalid reply output must be rejected");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ModelResponseValidationError);
+    expect(String(error)).not.toMatch(/PRIVATE_REPLY_SYSTEM|PRIVATE_REPLY_INPUT|PRIVATE_REPLY_RESPONSE/);
+  }
 });
 
 test("requires every configured model name", () => {

@@ -1,6 +1,7 @@
 import type { z } from "zod";
 
 export type StructuredModelRequest<T> = {
+  purpose: "analysis" | "reply";
   system: string;
   input: string;
   schemaName: string;
