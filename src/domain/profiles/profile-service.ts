@@ -1,0 +1,563 @@
+import { eq } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import { z } from "zod";
+
+import { getDb } from "@/db/client";
+import {
+  profileFactRevisions,
+  profileFacts,
+  type ProfileFactSource,
+} from "@/db/schema";
+import { decryptJson, encryptJson } from "@/domain/crypto/encrypted-json";
+import { mergeProfileFact } from "@/domain/memory/profile-corrections";
+import type { ModelGateway } from "@/domain/models/gateway";
+import { OpenAIModelGateway } from "@/domain/models/openai-gateway";
+
+export const profileFactKinds = [
+  "relationship", "personality_tendency", "speech_pattern", "conversation_role",
+  "seriousness_cue", "preferred_interaction", "sensitive_topic", "interest",
+  "nickname", "repeated_event", "conflict_response", "reconciliation_style",
+] as const;
+
+export type ProfileFactKind = typeof profileFactKinds[number];
+
+export type ProfileFactView = {
+  id: string;
+  participantId: string;
+  kind: ProfileFactKind;
+  value: string;
+  conditions: string[];
+  exceptions: string[];
+  confidence: number;
+  source: ProfileFactSource;
+  locked: boolean;
+  evidenceTurnIds: string[];
+};
+
+export type ProfileEditCommand = {
+  participantId: string;
+  factId?: string;
+  kind: ProfileFactView["kind"];
+  value: string;
+  conditions: string[];
+  exceptions: string[];
+  action: "edit" | "confirm";
+};
+
+export type CorrectionChatInput = {
+  participantId: string;
+  userExplanation: string;
+};
+
+export type CorrectionProposal = {
+  proposalId: string;
+  participantId: string;
+  factKind: ProfileFactView["kind"];
+  oldValue: string | null;
+  newValue: string;
+  conditions: string[];
+  exceptions: string[];
+};
+
+export type AiProfileFact = {
+  participantId: string;
+  kind: ProfileFactKind;
+  value: string;
+  conditions: string[];
+  exceptions: string[];
+  confidence: number;
+  evidenceTurnIds: string[];
+};
+
+export type StoredProfileFact = {
+  id: string;
+  participantId: string;
+  kind: string;
+  encryptedValue: string;
+  encryptedConditions: string;
+  encryptedExceptions: string;
+  evidenceTurnIds: string;
+  confidence: number;
+  source: ProfileFactSource;
+  locked: boolean;
+};
+
+export type StoredProfileRevision = {
+  id: string;
+  profileFactId: string;
+  encryptedPreviousValue: string | null;
+  encryptedNextValue: string;
+  encryptedConditions: string;
+  encryptedExceptions: string;
+  source: ProfileFactSource;
+};
+
+type NewStoredProfileFact = Omit<StoredProfileFact, "id">;
+type ProfileFactUpdate = Omit<StoredProfileFact, "id" | "participantId" | "kind">;
+type NewStoredRevision = Omit<StoredProfileRevision, "id">;
+
+export interface ProfileRepository {
+  transaction<T>(work: (repository: ProfileRepository) => Promise<T>): Promise<T>;
+  listFacts(participantId: string): Promise<StoredProfileFact[]>;
+  findFact(factId: string): Promise<StoredProfileFact | undefined>;
+  createFact(fact: NewStoredProfileFact): Promise<StoredProfileFact>;
+  updateFact(factId: string, update: ProfileFactUpdate): Promise<StoredProfileFact>;
+  createRevision(revision: NewStoredRevision): Promise<StoredProfileRevision>;
+  findRevision(revisionId: string): Promise<StoredProfileRevision | undefined>;
+  updateRevisionSource(revisionId: string, source: ProfileFactSource): Promise<void>;
+}
+
+type DrizzleExecutor = Pick<
+  NodePgDatabase<typeof import("@/db/schema")>,
+  "select" | "insert" | "update"
+>;
+
+function createDrizzleOperations(database: DrizzleExecutor): Omit<ProfileRepository, "transaction"> {
+  return {
+    async listFacts(participantId) {
+      return database.select({
+        id: profileFacts.id,
+        participantId: profileFacts.participantId,
+        kind: profileFacts.kind,
+        encryptedValue: profileFacts.encryptedValue,
+        encryptedConditions: profileFacts.encryptedConditions,
+        encryptedExceptions: profileFacts.encryptedExceptions,
+        evidenceTurnIds: profileFacts.evidenceTurnIds,
+        confidence: profileFacts.confidence,
+        source: profileFacts.source,
+        locked: profileFacts.locked,
+      }).from(profileFacts).where(eq(profileFacts.participantId, participantId));
+    },
+
+    async findFact(factId) {
+      const rows = await database.select({
+        id: profileFacts.id,
+        participantId: profileFacts.participantId,
+        kind: profileFacts.kind,
+        encryptedValue: profileFacts.encryptedValue,
+        encryptedConditions: profileFacts.encryptedConditions,
+        encryptedExceptions: profileFacts.encryptedExceptions,
+        evidenceTurnIds: profileFacts.evidenceTurnIds,
+        confidence: profileFacts.confidence,
+        source: profileFacts.source,
+        locked: profileFacts.locked,
+      }).from(profileFacts).where(eq(profileFacts.id, factId));
+      return rows[0];
+    },
+
+    async createFact(fact) {
+      const rows = await database.insert(profileFacts).values(fact).returning();
+      const created = rows[0];
+      if (!created) throw new Error("Could not create profile fact");
+      return created;
+    },
+
+    async updateFact(factId, update) {
+      const rows = await database.update(profileFacts).set({
+        ...update,
+        updatedAt: new Date(),
+      }).where(eq(profileFacts.id, factId)).returning();
+      const updated = rows[0];
+      if (!updated) throw new Error("Profile fact not found");
+      return updated;
+    },
+
+    async createRevision(revision) {
+      const rows = await database.insert(profileFactRevisions).values(revision).returning();
+      const created = rows[0];
+      if (!created) throw new Error("Could not create profile revision");
+      return created;
+    },
+
+    async findRevision(revisionId) {
+      const rows = await database.select({
+        id: profileFactRevisions.id,
+        profileFactId: profileFactRevisions.profileFactId,
+        encryptedPreviousValue: profileFactRevisions.encryptedPreviousValue,
+        encryptedNextValue: profileFactRevisions.encryptedNextValue,
+        encryptedConditions: profileFactRevisions.encryptedConditions,
+        encryptedExceptions: profileFactRevisions.encryptedExceptions,
+        source: profileFactRevisions.source,
+      }).from(profileFactRevisions).where(eq(profileFactRevisions.id, revisionId));
+      return rows[0];
+    },
+
+    async updateRevisionSource(revisionId, source) {
+      await database.update(profileFactRevisions).set({ source })
+        .where(eq(profileFactRevisions.id, revisionId));
+    },
+  };
+}
+
+/** Production adapter; domain tests inject an in-memory implementation. */
+export function createDrizzleProfileRepository(
+  database: NodePgDatabase<typeof import("@/db/schema")> = getDb(),
+): ProfileRepository {
+  const operations = createDrizzleOperations(database);
+  return {
+    ...operations,
+    transaction: (work) => database.transaction((transaction) => work({
+      ...createDrizzleOperations(transaction as unknown as DrizzleExecutor),
+      transaction: async (nestedWork) => nestedWork({
+        ...createDrizzleOperations(transaction as unknown as DrizzleExecutor),
+        transaction: async () => { throw new Error("Nested profile transactions are not supported"); },
+      }),
+    })),
+  };
+}
+
+const correctionSchema = z.object({
+  factKind: z.enum(profileFactKinds),
+  existingFactId: z.string().nullable(),
+  newValue: z.string().trim().min(1),
+  conditions: z.array(z.string()),
+  exceptions: z.array(z.string()),
+});
+
+function isProfileFactKind(value: string): value is ProfileFactKind {
+  return (profileFactKinds as readonly string[]).includes(value);
+}
+
+function toView(fact: StoredProfileFact): ProfileFactView {
+  if (!isProfileFactKind(fact.kind)) throw new Error(`Unknown profile fact kind: ${fact.kind}`);
+  return {
+    id: fact.id,
+    participantId: fact.participantId,
+    kind: fact.kind,
+    value: decryptJson<string>(fact.encryptedValue),
+    conditions: decryptJson<string[]>(fact.encryptedConditions),
+    exceptions: decryptJson<string[]>(fact.encryptedExceptions),
+    confidence: fact.confidence,
+    source: fact.source,
+    locked: fact.locked,
+    evidenceTurnIds: decryptJson<string[]>(fact.evidenceTurnIds),
+  };
+}
+
+function encryptedFactContent(input: {
+  value: string;
+  conditions: string[];
+  exceptions: string[];
+  evidenceTurnIds: string[];
+}) {
+  return {
+    encryptedValue: encryptJson(input.value),
+    encryptedConditions: encryptJson(input.conditions),
+    encryptedExceptions: encryptJson(input.exceptions),
+    evidenceTurnIds: encryptJson(input.evidenceTurnIds),
+  };
+}
+
+type RevisionValuePayload = { value: string; evidenceTurnIds: string[] };
+
+function encryptedRevisionValue(value: string, evidenceTurnIds: string[]): string {
+  return encryptJson<RevisionValuePayload>({ value, evidenceTurnIds });
+}
+
+function revisionValue(payload: string): RevisionValuePayload {
+  const decoded = decryptJson<unknown>(payload);
+  // Supports revision rows created before evidence was included in this payload.
+  if (typeof decoded === "string") return { value: decoded, evidenceTurnIds: [] };
+  if (
+    typeof decoded === "object"
+    && decoded !== null
+    && "value" in decoded
+    && typeof decoded.value === "string"
+    && "evidenceTurnIds" in decoded
+    && Array.isArray(decoded.evidenceTurnIds)
+    && decoded.evidenceTurnIds.every((id) => typeof id === "string")
+  ) {
+    return { value: decoded.value, evidenceTurnIds: decoded.evidenceTurnIds };
+  }
+  throw new Error("Invalid encrypted profile revision value");
+}
+
+function assertAiFact(input: AiProfileFact): void {
+  if (!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) {
+    throw new RangeError("AI profile confidence must be between 0 and 1");
+  }
+  if (input.evidenceTurnIds.length === 0) {
+    throw new Error("AI profile facts require evidence turn IDs");
+  }
+}
+
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+export class ProfileService {
+  constructor(
+    private readonly repository: ProfileRepository,
+    private readonly gateway?: ModelGateway,
+  ) {}
+
+  async listProfileFacts(participantId: string): Promise<ProfileFactView[]> {
+    const facts = await this.repository.listFacts(participantId);
+    return facts.filter((fact) => fact.source !== "ai_change_proposal").map(toView);
+  }
+
+  async applyProfileEdit(command: ProfileEditCommand): Promise<ProfileFactView> {
+    const source: ProfileFactSource = command.action === "edit" ? "user_edited" : "user_confirmed";
+    return this.repository.transaction(async (repository) => {
+      if (!command.factId) {
+        const content = encryptedFactContent({ ...command, evidenceTurnIds: [] });
+        return toView(await repository.createFact({
+          participantId: command.participantId,
+          kind: command.kind,
+          ...content,
+          confidence: 1,
+          source,
+          locked: true,
+        }));
+      }
+
+      const existing = await repository.findFact(command.factId);
+      if (!existing || existing.participantId !== command.participantId) {
+        throw new Error("Profile fact not found");
+      }
+      if (existing.kind !== command.kind) throw new Error("Profile fact kind cannot be changed");
+      const content = encryptedFactContent({
+        ...command,
+        evidenceTurnIds: command.action === "confirm"
+          ? decryptJson<string[]>(existing.evidenceTurnIds)
+          : [],
+      });
+      await repository.createRevision({
+        profileFactId: existing.id,
+        encryptedPreviousValue: existing.encryptedValue,
+        encryptedNextValue: encryptedRevisionValue(command.value, []),
+        encryptedConditions: content.encryptedConditions,
+        encryptedExceptions: content.encryptedExceptions,
+        source,
+      });
+      return toView(await repository.updateFact(existing.id, {
+        ...content,
+        confidence: 1,
+        source,
+        locked: true,
+      }));
+    });
+  }
+
+  async applyAiInference(input: AiProfileFact): Promise<ProfileFactView> {
+    assertAiFact(input);
+    return this.repository.transaction(async (repository) => {
+      const existingFacts = (await repository.listFacts(input.participantId))
+        .filter((fact) => fact.kind === input.kind && fact.source !== "ai_change_proposal");
+      const exact = existingFacts.find((fact) => {
+        const view = toView(fact);
+        return view.value === input.value
+          && sameStrings(view.conditions, input.conditions)
+          && sameStrings(view.exceptions, input.exceptions);
+      });
+      const existing = exact ?? existingFacts[0];
+      const incoming = {
+        value: input.value,
+        conditions: input.conditions,
+        exceptions: input.exceptions,
+        confidence: input.confidence,
+        source: "ai_inference" as const,
+        locked: false,
+      };
+      const content = encryptedFactContent(input);
+
+      if (!existing) {
+        return toView(await repository.createFact({
+          participantId: input.participantId,
+          kind: input.kind,
+          ...content,
+          confidence: input.confidence,
+          source: "ai_inference",
+          locked: false,
+        }));
+      }
+
+      const current = toView(existing);
+      if (exact && (current.locked || current.source === "user_edited" || current.source === "user_confirmed")) {
+        return current;
+      }
+      const merged = mergeProfileFact(current, incoming);
+      if (merged.proposal) {
+        const revision = await repository.createRevision({
+          profileFactId: existing.id,
+          encryptedPreviousValue: existing.encryptedValue,
+          encryptedNextValue: encryptedRevisionValue(input.value, input.evidenceTurnIds),
+          encryptedConditions: content.encryptedConditions,
+          encryptedExceptions: content.encryptedExceptions,
+          source: "ai_change_proposal",
+        });
+        return {
+          id: revision.id,
+          participantId: input.participantId,
+          kind: input.kind,
+          value: input.value,
+          conditions: input.conditions,
+          exceptions: input.exceptions,
+          confidence: input.confidence,
+          source: "ai_change_proposal",
+          locked: false,
+          evidenceTurnIds: input.evidenceTurnIds,
+        };
+      }
+
+      await repository.createRevision({
+        profileFactId: existing.id,
+        encryptedPreviousValue: existing.encryptedValue,
+        encryptedNextValue: encryptedRevisionValue(input.value, input.evidenceTurnIds),
+        encryptedConditions: content.encryptedConditions,
+        encryptedExceptions: content.encryptedExceptions,
+        source: "ai_inference",
+      });
+      return toView(await repository.updateFact(existing.id, {
+        ...content,
+        confidence: input.confidence,
+        source: "ai_inference",
+        locked: false,
+      }));
+    });
+  }
+
+  async proposeProfileCorrection(input: CorrectionChatInput): Promise<CorrectionProposal> {
+    if (!this.gateway) throw new Error("A model gateway is required for correction chat");
+    const currentFacts = await this.listProfileFacts(input.participantId);
+    const result = await this.gateway.extract({
+      purpose: "analysis",
+      schemaName: "profile_correction",
+      schema: correctionSchema,
+      system: [
+        "Map the user's correction to exactly one profile fact.",
+        "Return conditions and exceptions explicitly instead of making unconditional personality claims.",
+        "Use an existingFactId only when the supplied fact is the one being corrected.",
+      ].join(" "),
+      input: JSON.stringify({
+        participantId: input.participantId,
+        userExplanation: input.userExplanation,
+        currentFacts,
+      }),
+    });
+
+    return this.repository.transaction(async (repository) => {
+      const requested = result.existingFactId
+        ? await repository.findFact(result.existingFactId)
+        : undefined;
+      const matching = requested?.participantId === input.participantId && requested.kind === result.factKind
+        ? requested
+        : (await repository.listFacts(input.participantId))
+          .find((fact) => fact.kind === result.factKind && fact.source !== "ai_change_proposal");
+      const encryptedNextValue = encryptedRevisionValue(result.newValue, []);
+      const encryptedConditions = encryptJson(result.conditions);
+      const encryptedExceptions = encryptJson(result.exceptions);
+
+      if (matching) {
+        const revision = await repository.createRevision({
+          profileFactId: matching.id,
+          encryptedPreviousValue: matching.encryptedValue,
+          encryptedNextValue,
+          encryptedConditions,
+          encryptedExceptions,
+          source: "ai_change_proposal",
+        });
+        return {
+          proposalId: revision.id,
+          participantId: input.participantId,
+          factKind: result.factKind,
+          oldValue: decryptJson<string>(matching.encryptedValue),
+          newValue: result.newValue,
+          conditions: result.conditions,
+          exceptions: result.exceptions,
+        };
+      }
+
+      const proposal = await repository.createFact({
+        participantId: input.participantId,
+        kind: result.factKind,
+        encryptedValue: encryptJson(result.newValue),
+        encryptedConditions,
+        encryptedExceptions,
+        evidenceTurnIds: encryptJson([]),
+        confidence: 1,
+        source: "ai_change_proposal",
+        locked: false,
+      });
+      return {
+        proposalId: proposal.id,
+        participantId: input.participantId,
+        factKind: result.factKind,
+        oldValue: null,
+        newValue: result.newValue,
+        conditions: result.conditions,
+        exceptions: result.exceptions,
+      };
+    });
+  }
+
+  async confirmProfileCorrection(participantId: string, proposalId: string): Promise<ProfileFactView> {
+    return this.repository.transaction(async (repository) => {
+      const revision = await repository.findRevision(proposalId);
+      if (revision?.source === "ai_change_proposal") {
+        const existing = await repository.findFact(revision.profileFactId);
+        if (!existing || existing.participantId !== participantId) throw new Error("Correction proposal not found");
+        const next = revisionValue(revision.encryptedNextValue);
+        const updated = await repository.updateFact(existing.id, {
+          encryptedValue: encryptJson(next.value),
+          encryptedConditions: revision.encryptedConditions,
+          encryptedExceptions: revision.encryptedExceptions,
+          evidenceTurnIds: encryptJson(next.evidenceTurnIds),
+          confidence: 1,
+          source: "user_confirmed",
+          locked: true,
+        });
+        await repository.updateRevisionSource(revision.id, "user_confirmed");
+        return toView(updated);
+      }
+
+      const newFactProposal = await repository.findFact(proposalId);
+      if (
+        !newFactProposal
+        || newFactProposal.participantId !== participantId
+        || newFactProposal.source !== "ai_change_proposal"
+      ) {
+        throw new Error("Correction proposal not found");
+      }
+      return toView(await repository.updateFact(newFactProposal.id, {
+        encryptedValue: newFactProposal.encryptedValue,
+        encryptedConditions: newFactProposal.encryptedConditions,
+        encryptedExceptions: newFactProposal.encryptedExceptions,
+        evidenceTurnIds: encryptJson([]),
+        confidence: 1,
+        source: "user_confirmed",
+        locked: true,
+      }));
+    });
+  }
+}
+
+export async function listProfileFacts(
+  participantId: string,
+  repository: ProfileRepository = createDrizzleProfileRepository(),
+): Promise<ProfileFactView[]> {
+  return new ProfileService(repository).listProfileFacts(participantId);
+}
+
+export async function applyProfileEdit(
+  command: ProfileEditCommand,
+  repository: ProfileRepository = createDrizzleProfileRepository(),
+): Promise<ProfileFactView> {
+  return new ProfileService(repository).applyProfileEdit(command);
+}
+
+export async function proposeProfileCorrection(
+  input: CorrectionChatInput,
+  repository: ProfileRepository = createDrizzleProfileRepository(),
+  gateway: ModelGateway = new OpenAIModelGateway(),
+): Promise<CorrectionProposal> {
+  return new ProfileService(repository, gateway).proposeProfileCorrection(input);
+}
+
+export async function confirmProfileCorrection(
+  participantId: string,
+  proposalId: string,
+  repository: ProfileRepository = createDrizzleProfileRepository(),
+): Promise<ProfileFactView> {
+  return new ProfileService(repository).confirmProfileCorrection(participantId, proposalId);
+}
