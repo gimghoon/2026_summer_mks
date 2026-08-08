@@ -219,8 +219,17 @@ export async function importKakaoExport(
     if (insertedIds.size > 0) {
       const allMessages = sortedMessages(await transaction.listMessages(roomId));
       const byFingerprint = new Map(allMessages.map((message) => [message.sourceFingerprint, message]));
-      const affectedTurns = groupMessageTurns(allMessages)
-        .filter((turn) => turn.messages.some((message) => insertedIds.has(byFingerprint.get(message.sourceFingerprint)?.id ?? "")));
+      const groupedTurns = groupMessageTurns(allMessages);
+      const affectedTurnIndexes = new Set<number>();
+      groupedTurns.forEach((turn, index) => {
+        if (!turn.messages.some((message) => insertedIds.has(byFingerprint.get(message.sourceFingerprint)?.id ?? ""))) return;
+        // A late message can split an old neighboring turn. Rebuild its new
+        // turn and the immediate new boundaries on both sides, but no more.
+        for (let neighbor = Math.max(0, index - 1); neighbor <= Math.min(groupedTurns.length - 1, index + 1); neighbor += 1) {
+          affectedTurnIndexes.add(neighbor);
+        }
+      });
+      const affectedTurns = groupedTurns.filter((_, index) => affectedTurnIndexes.has(index));
       const affectedMessageIds = affectedTurns.flatMap((turn) => turn.messages.map((message) => (
         byFingerprint.get(message.sourceFingerprint)?.id
       )).filter((id): id is string => Boolean(id)));

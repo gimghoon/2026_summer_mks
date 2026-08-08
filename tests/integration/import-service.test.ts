@@ -103,3 +103,27 @@ test("imports encrypted messages once when an existing room is re-imported", asy
   expect(repository.persistedTurns).toHaveLength(3);
   expect(repository.persistedTurns.every((turn) => !turn.encryptedMessageIds.includes("message-"))).toBe(true);
 });
+
+test("replaces neighboring turns when a late middle message creates new boundaries", async () => {
+  const repository = new InMemoryImportRepository();
+  const initial = [
+    "지훈과 카카오톡 대화",
+    "2026년 8월 7일 오전 9:01, 민수 : 먼저 도착했어",
+    "2026년 8월 7일 오전 9:03, 민수 : 커피 주문할게",
+  ].join("\n");
+  const lateMiddle = [
+    "지훈과 카카오톡 대화",
+    "2026년 8월 7일 오전 9:02, 지훈 : 나도 거의 다 왔어",
+  ].join("\n");
+
+  const first = await importKakaoExport({
+    title: "지훈과 카카오톡 대화", selfName: "지훈", rawText: initial,
+  }, repository);
+  await importKakaoExport({
+    title: "지훈과 카카오톡 대화", selfName: "지훈", rawText: lateMiddle, existingRoomId: first.roomId,
+  }, repository);
+
+  const turnMessageIds = repository.persistedTurns.map((turn) => decryptJson<string[]>(turn.encryptedMessageIds));
+  expect(turnMessageIds).toEqual([["message-1"], ["message-3"], ["message-2"]]);
+  expect(new Set(turnMessageIds.flat()).size).toBe(3);
+});

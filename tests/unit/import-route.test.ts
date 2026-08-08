@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { hash } from "@node-rs/argon2";
 
 const importKakaoExportMock = vi.hoisted(() => vi.fn());
@@ -8,7 +10,7 @@ vi.mock("@/domain/imports/import-service", () => ({
 
 import { POST } from "@/app/api/imports/route";
 import { createSessionCookie } from "@/domain/auth/session";
-import { MAX_IMPORT_FILE_BYTES } from "@/domain/imports/import-limits";
+import { MAX_IMPORT_FILE_BYTES, MAX_IMPORT_REQUEST_BYTES } from "@/domain/imports/import-limits";
 
 const databaseUrl = "postgresql://postgres:postgres@localhost:5432/private_reply_assistant";
 const password = "local-test-password";
@@ -28,36 +30,97 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllEnvs());
 
-async function authenticatedRequest(formData: FormData): Promise<Request> {
+const multipartBoundary = "import-boundary";
+const encoder = new TextEncoder();
+
+function multipartBody(selfName: string | undefined, file: Uint8Array): ArrayBuffer {
+  const parts: Uint8Array[] = [];
+  if (selfName !== undefined) {
+    parts.push(encoder.encode(
+      `--${multipartBoundary}\r\nContent-Disposition: form-data; name="selfName"\r\n\r\n${selfName}\r\n`,
+    ));
+  }
+  parts.push(encoder.encode(
+    `--${multipartBoundary}\r\nContent-Disposition: form-data; name="file"; filename="chat.txt"\r\nContent-Type: text/plain\r\n\r\n`,
+  ));
+  parts.push(file, encoder.encode(`\r\n--${multipartBoundary}--\r\n`));
+  const totalBytes = parts.reduce((total, part) => total + part.byteLength, 0);
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const part of parts) {
+    body.set(part, offset);
+    offset += part.byteLength;
+  }
+  return body.buffer;
+}
+
+async function authenticatedRequest(body: BodyInit, contentType = `multipart/form-data; boundary=${multipartBoundary}`): Promise<Request> {
   const cookie = (await createSessionCookie(password)).split(";", 1)[0]!;
   return new Request("https://assistant.test/api/imports", {
     method: "POST",
-    headers: { cookie },
-    body: formData,
+    headers: { cookie, "content-type": contentType },
+    body,
   });
 }
 
 test("returns Zod validation errors for a missing selfName", async () => {
-  const formData = new FormData();
-  formData.set("file", new File(["대화방 카카오톡 대화"], "chat.txt", { type: "text/plain" }));
-
-  const response = await POST(await authenticatedRequest(formData));
+  const response = await POST(await authenticatedRequest(
+    multipartBody(undefined, encoder.encode("대화방 카카오톡 대화")),
+  ));
 
   expect(response.status).toBe(400);
   await expect(response.json()).resolves.toMatchObject({ error: "Invalid import request" });
 });
 
-test("refuses a file larger than 50 MiB before reading it", async () => {
-  const formData = new FormData();
-  formData.set("selfName", "지훈");
-  formData.set("file", new File([new Uint8Array(MAX_IMPORT_FILE_BYTES + 1)], "chat.txt"));
+test("returns 400 for malformed multipart below the request cap", async () => {
+  const response = await POST(await authenticatedRequest("this is not multipart"));
 
-  const request = await authenticatedRequest(formData);
-  // Undici's multipart parser rejects this large synthetic body before the
-  // handler runs. Override only that transport boundary to exercise the
-  // route's explicit 50 MiB guard.
-  Object.defineProperty(request, "formData", { value: async () => formData });
+  expect(response.status).toBe(400);
+  expect(importKakaoExportMock).not.toHaveBeenCalled();
+});
+
+test("rejects an over-limit content-length before multipart parsing", async () => {
+  const cookie = (await createSessionCookie(password)).split(";", 1)[0]!;
+  const request = new Request("https://assistant.test/api/imports", {
+    method: "POST",
+    headers: {
+      cookie,
+      "content-type": "multipart/form-data; boundary=import-boundary",
+      "content-length": String(MAX_IMPORT_REQUEST_BYTES + 1),
+    },
+    body: "--import-boundary--\r\n",
+  });
+
   const response = await POST(request);
+
+  expect(response.status).toBe(413);
+  expect(importKakaoExportMock).not.toHaveBeenCalled();
+});
+
+test("rejects an over-limit multipart stream before multipart parsing", async () => {
+  const cookie = (await createSessionCookie(password)).split(";", 1)[0]!;
+  const request = new Request("https://assistant.test/api/imports", {
+    method: "POST",
+    headers: { cookie, "content-type": "multipart/form-data; boundary=import-boundary" },
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MAX_IMPORT_REQUEST_BYTES + 1));
+        controller.close();
+      },
+    }),
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
+
+  const response = await POST(request);
+
+  expect(response.status).toBe(413);
+  expect(importKakaoExportMock).not.toHaveBeenCalled();
+});
+
+test("refuses a multipart file larger than 50 MiB after bounded decoding", async () => {
+  const response = await POST(await authenticatedRequest(
+    multipartBody("지훈", new Uint8Array(MAX_IMPORT_FILE_BYTES + 1)),
+  ));
 
   expect(response.status).toBe(413);
   expect(importKakaoExportMock).not.toHaveBeenCalled();

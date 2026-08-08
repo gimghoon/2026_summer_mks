@@ -1,7 +1,10 @@
 import { z } from "zod";
 
 import { requireSession } from "@/domain/auth/session";
-import { MAX_IMPORT_FILE_BYTES } from "@/domain/imports/import-limits";
+import {
+  MAX_IMPORT_FILE_BYTES,
+  MAX_IMPORT_REQUEST_BYTES,
+} from "@/domain/imports/import-limits";
 import { importKakaoExport } from "@/domain/imports/import-service";
 import { parseKakaoExport } from "@/domain/kakao/parser";
 
@@ -9,8 +12,56 @@ const importFormSchema = z.object({
   selfName: z.string().trim().min(1, "selfName is required"),
 });
 
+class ImportBodyTooLargeError extends Error {}
+
 function badRequest(error: z.ZodError): Response {
   return Response.json({ error: "Invalid import request", issues: error.flatten() }, { status: 400 });
+}
+
+function declaredBodyIsTooLarge(request: Request): boolean {
+  const contentLength = request.headers.get("content-length");
+  if (!contentLength || !/^\d+$/.test(contentLength)) return false;
+  return Number(contentLength) > MAX_IMPORT_REQUEST_BYTES;
+}
+
+async function boundedMultipartRequest(request: Request): Promise<Request> {
+  if (declaredBodyIsTooLarge(request)) throw new ImportBodyTooLargeError();
+  if (!request.body) return request;
+
+  const reader = request.body.getReader();
+  const chunks: ArrayBuffer[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > MAX_IMPORT_REQUEST_BYTES) {
+      await reader.cancel();
+      throw new ImportBodyTooLargeError();
+    }
+    const copied = new Uint8Array(value.byteLength);
+    copied.set(value);
+    chunks.push(copied.buffer);
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(new Uint8Array(chunk), offset);
+    offset += chunk.byteLength;
+  }
+  const headers = new Headers(request.headers);
+  headers.delete("content-length");
+  return new Request(request.url, {
+    method: request.method,
+    headers,
+    body: body.buffer,
+  });
+}
+
+function isMultipartOversizeError(error: unknown): boolean {
+  if (error instanceof ImportBodyTooLargeError) return true;
+  return error instanceof Error && /(?:too large|too big|larger than|exceeds?|limit|size)/i.test(error.message);
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -18,8 +69,11 @@ export async function POST(request: Request): Promise<Response> {
 
   let formData: FormData;
   try {
-    formData = await request.formData();
-  } catch {
+    formData = await (await boundedMultipartRequest(request)).formData();
+  } catch (error) {
+    if (isMultipartOversizeError(error)) {
+      return new Response("Import file is too large", { status: 413 });
+    }
     return Response.json({ error: "Invalid import request" }, { status: 400 });
   }
 
