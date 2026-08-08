@@ -61,6 +61,7 @@ export type CorrectionProposal = {
 
 export type AiProfileFact = {
   participantId: string;
+  targetFactId: string | null;
   kind: ProfileFactKind;
   value: string;
   conditions: string[];
@@ -282,7 +283,10 @@ function assertAiFact(input: AiProfileFact): void {
 }
 
 function sameStrings(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
+  const normalizedLeft = left.map((value) => value.trim()).sort();
+  const normalizedRight = right.map((value) => value.trim()).sort();
+  return normalizedLeft.length === normalizedRight.length
+    && normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
 export class ProfileService {
@@ -350,7 +354,21 @@ export class ProfileService {
           && sameStrings(view.conditions, input.conditions)
           && sameStrings(view.exceptions, input.exceptions);
       });
-      const existing = exact ?? existingFacts[0];
+      let existing: StoredProfileFact | undefined;
+      if (input.targetFactId) {
+        const target = await repository.findFact(input.targetFactId);
+        if (
+          !target
+          || target.participantId !== input.participantId
+          || target.kind !== input.kind
+          || target.source === "ai_change_proposal"
+        ) {
+          throw new Error("AI profile target must match the same participant and fact kind");
+        }
+        existing = target;
+      } else {
+        existing = exact;
+      }
       const incoming = {
         value: input.value,
         conditions: input.conditions,
@@ -373,7 +391,14 @@ export class ProfileService {
       }
 
       const current = toView(existing);
-      if (exact && (current.locked || current.source === "user_edited" || current.source === "user_confirmed")) {
+      const matchesExisting = current.value === input.value
+        && sameStrings(current.conditions, input.conditions)
+        && sameStrings(current.exceptions, input.exceptions);
+      if (matchesExisting && (
+        current.locked
+        || current.source === "user_edited"
+        || current.source === "user_confirmed"
+      )) {
         return current;
       }
       const merged = mergeProfileFact(current, incoming);

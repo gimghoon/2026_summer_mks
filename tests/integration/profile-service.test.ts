@@ -2,10 +2,14 @@ import type { StructuredModelRequest, ModelGateway } from "@/domain/models/gatew
 import { decryptJson } from "@/domain/crypto/encrypted-json";
 import {
   extractRoomMemory,
+  redactChunkForEmbedding,
   type ChunkMemoryPayload,
   type ChunkMemoryUpdate,
   type MemoryChunk,
   type MemoryRepository,
+  type RoomMemoryPayload,
+  type RoomParticipantIdentity,
+  type StoredChunkMemory,
 } from "@/domain/memory/extractor";
 import {
   ProfileService,
@@ -76,6 +80,7 @@ class FakeGateway implements ModelGateway {
     this.requests.push(request as StructuredModelRequest<unknown>);
     const response = this.responses.shift();
     if (response === undefined) throw new Error("No fake model response queued");
+    if (response instanceof Error) throw response;
     return request.schema.parse(response);
   }
 
@@ -88,15 +93,46 @@ class FakeGateway implements ModelGateway {
 class InMemoryMemoryRepository implements MemoryRepository {
   readonly chunkUpdates: ChunkMemoryUpdate[] = [];
   roomMemory: { roomId: string; encryptedSummary: string } | undefined;
+  private readonly latestUpdates = new Map<string, ChunkMemoryUpdate>();
+  private readonly roomParticipants: RoomParticipantIdentity[];
 
-  constructor(private readonly pendingChunks: MemoryChunk[]) {}
+  constructor(
+    private readonly chunks: MemoryChunk[],
+    roomParticipants?: RoomParticipantIdentity[],
+  ) {
+    this.roomParticipants = roomParticipants ?? [...new Map(chunks.flatMap((chunk) => (
+      chunk.turns.map((turn) => [turn.participantId, { id: turn.participantId, name: turn.participantName }] as const)
+    ))).values()];
+  }
 
   async listChunksForAnalysis(roomId: string): Promise<MemoryChunk[]> {
-    return this.pendingChunks.filter((chunk) => chunk.roomId === roomId);
+    return this.chunks.filter((chunk) => {
+      if (chunk.roomId !== roomId) return false;
+      const latest = this.latestUpdates.get(chunk.id);
+      return !latest || !decryptJson<ChunkMemoryPayload>(latest.encryptedSummary).analysisComplete;
+    });
+  }
+
+  async listRoomParticipants(roomId: string): Promise<RoomParticipantIdentity[]> {
+    return this.chunks.some((chunk) => chunk.roomId === roomId) ? this.roomParticipants : [];
   }
 
   async updateChunkMemory(update: ChunkMemoryUpdate): Promise<void> {
     this.chunkUpdates.push(update);
+    this.latestUpdates.set(update.chunkId, update);
+  }
+
+  async listChunkMemories(roomId: string): Promise<StoredChunkMemory[]> {
+    return this.chunks.filter((chunk) => chunk.roomId === roomId).map((chunk) => {
+      const update = this.latestUpdates.get(chunk.id);
+      if (!update) throw new Error("Chunk memory has not been analyzed");
+      return {
+        chunkId: chunk.id,
+        ...decryptJson<ChunkMemoryPayload>(update.encryptedSummary),
+        topicTags: decryptJson<string[]>(update.encryptedTopicTags),
+        eventTypes: decryptJson<string[]>(update.encryptedEventTypes),
+      };
+    });
   }
 
   async upsertRoomMemory(roomId: string, encryptedSummary: string): Promise<void> {
@@ -203,6 +239,7 @@ test("hierarchical extraction preserves locked facts, provenance, encryption, an
     summary: "서로 농담을 주고받았다",
     candidateProfileFacts: [{
       participantId: "participant-1",
+      targetFactId: "fact-1",
       kind: "speech_pattern",
       value: "장난이 많다",
       conditions: ["편한 대화"],
@@ -211,12 +248,20 @@ test("hierarchical extraction preserves locked facts, provenance, encryption, an
       evidenceTurnIds: ["turn-1"],
     }, {
       participantId: "participant-1",
+      targetFactId: null,
       kind: "interest",
       value: "농담을 즐긴다",
       conditions: [],
       exceptions: [],
       confidence: 0.75,
       evidenceTurnIds: ["turn-1"],
+    }],
+  }, {
+    topics: [{
+      key: "playful-daily-chat",
+      tags: ["농담"],
+      childChunkIds: ["chunk-1"],
+      summary: "일상에서 친밀하게 농담을 주고받는다",
     }],
   }, { summary: "친밀한 분위기에서 농담을 주고받는 방" }]);
 
@@ -243,15 +288,40 @@ test("hierarchical extraction preserves locked facts, provenance, encryption, an
   expect(gateway.requests.every((request) => request.purpose === "analysis")).toBe(true);
   expect(gateway.embeddedTexts[0]).toContain("participant:participant-1");
   expect(gateway.embeddedTexts[0]).not.toContain("민수");
-  const chunkPayload = decryptJson<ChunkMemoryPayload>(memoryRepository.chunkUpdates[0]!.encryptedSummary);
+  const initialChunkPayload = decryptJson<ChunkMemoryPayload>(memoryRepository.chunkUpdates[0]!.encryptedSummary);
+  expect(initialChunkPayload.analysisComplete).toBe(false);
+  const chunkPayload = decryptJson<ChunkMemoryPayload>(memoryRepository.chunkUpdates.at(-1)!.encryptedSummary);
   expect(chunkPayload).toEqual({
     summary: "서로 농담을 주고받았다",
     emotions: ["즐거움"],
     relationshipSignals: ["친밀한 장난"],
     sourceFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    analysisComplete: true,
   });
-  expect(decryptJson<string>(memoryRepository.roomMemory!.encryptedSummary))
-    .toBe("친밀한 분위기에서 농담을 주고받는 방");
+  expect(decryptJson<RoomMemoryPayload>(memoryRepository.roomMemory!.encryptedSummary)).toEqual({
+    version: 1,
+    topics: [{
+      key: "playful-daily-chat",
+      tags: ["농담"],
+      childChunkIds: ["chunk-1"],
+      summary: "일상에서 친밀하게 농담을 주고받는다",
+    }],
+    summary: "친밀한 분위기에서 농담을 주고받는 방",
+  });
+  const chunkRequest = JSON.parse(gateway.requests.find((request) => (
+    request.schemaName === "conversation_chunk_memory"
+  ))!.input) as { existingProfileFacts: Array<{ id: string; kind: string; value: string }> };
+  expect(chunkRequest.existingProfileFacts).toContainEqual({
+    id: "fact-1",
+    participantId: "participant-1",
+    kind: "speech_pattern",
+    value: "장난이 적다",
+  });
+  const roomRequest = JSON.parse(gateway.requests.find((request) => (
+    request.schemaName === "room_memory"
+  ))!.input) as Record<string, unknown>;
+  expect(roomRequest).toHaveProperty("topicMemories");
+  expect(roomRequest).not.toHaveProperty("childMemories");
 });
 
 test("AI facts without evidence or bounded confidence are rejected", async () => {
@@ -260,6 +330,7 @@ test("AI facts without evidence or bounded confidence are rejected", async () =>
 
   await expect(service.applyAiInference({
     participantId: "participant-1",
+    targetFactId: null,
     kind: "interest",
     value: "영화",
     conditions: [],
@@ -269,6 +340,7 @@ test("AI facts without evidence or bounded confidence are rejected", async () =>
   })).rejects.toThrow("between 0 and 1");
   await expect(service.applyAiInference({
     participantId: "participant-1",
+    targetFactId: null,
     kind: "interest",
     value: "영화",
     conditions: [],
@@ -277,6 +349,221 @@ test("AI facts without evidence or bounded confidence are rejected", async () =>
     evidenceTurnIds: [],
   })).rejects.toThrow("require evidence");
   expect(repository.facts).toHaveLength(0);
+});
+
+test("untargeted same-kind inferences remain additive while invalid targets are rejected", async () => {
+  const repository = new InMemoryProfileRepository();
+  const service = new ProfileService(repository);
+  const evidence = ["turn-1"];
+
+  const movie = await service.applyAiInference({
+    participantId: "participant-1",
+    targetFactId: null,
+    kind: "interest",
+    value: "영화를 좋아한다",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.8,
+    evidenceTurnIds: evidence,
+  });
+  const music = await service.applyAiInference({
+    participantId: "participant-1",
+    targetFactId: null,
+    kind: "interest",
+    value: "라이브 음악을 좋아한다",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.7,
+    evidenceTurnIds: evidence,
+  });
+  await service.applyAiInference({
+    participantId: "participant-1",
+    targetFactId: null,
+    kind: "repeated_event",
+    value: "금요일마다 영화를 본다",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.76,
+    evidenceTurnIds: evidence,
+  });
+  await service.applyAiInference({
+    participantId: "participant-1",
+    targetFactId: null,
+    kind: "repeated_event",
+    value: "월말에 전시를 간다",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.68,
+    evidenceTurnIds: evidence,
+  });
+
+  expect(movie.id).not.toBe(music.id);
+  expect((await service.listProfileFacts("participant-1")).map((fact) => [fact.kind, fact.value]))
+    .toEqual(expect.arrayContaining([
+      ["interest", "영화를 좋아한다"],
+      ["interest", "라이브 음악을 좋아한다"],
+      ["repeated_event", "금요일마다 영화를 본다"],
+      ["repeated_event", "월말에 전시를 간다"],
+    ]));
+
+  const otherParticipant = await service.applyProfileEdit({
+    participantId: "participant-2",
+    kind: "interest",
+    value: "등산",
+    conditions: [],
+    exceptions: [],
+    action: "edit",
+  });
+  await expect(service.applyAiInference({
+    participantId: "participant-1",
+    targetFactId: otherParticipant.id,
+    kind: "interest",
+    value: "등산을 좋아한다",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.8,
+    evidenceTurnIds: evidence,
+  })).rejects.toThrow("same participant and fact kind");
+  await expect(service.applyAiInference({
+    participantId: "participant-1",
+    targetFactId: movie.id,
+    kind: "repeated_event",
+    value: "영화를 자주 본다",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.8,
+    evidenceTurnIds: evidence,
+  })).rejects.toThrow("same participant and fact kind");
+});
+
+test("a targeted contradiction to a locked fact becomes a proposal", async () => {
+  const repository = new InMemoryProfileRepository();
+  const service = new ProfileService(repository);
+  const locked = await service.applyProfileEdit({
+    participantId: "participant-1",
+    kind: "interest",
+    value: "공포 영화를 싫어한다",
+    conditions: [],
+    exceptions: [],
+    action: "edit",
+  });
+
+  const result = await service.applyAiInference({
+    participantId: "participant-1",
+    targetFactId: locked.id,
+    kind: "interest",
+    value: "공포 영화를 좋아한다",
+    conditions: [],
+    exceptions: [],
+    confidence: 0.95,
+    evidenceTurnIds: ["turn-2"],
+  });
+
+  expect(result).toMatchObject({ source: "ai_change_proposal", value: "공포 영화를 좋아한다" });
+  expect((await service.listProfileFacts("participant-1"))[0]).toMatchObject({
+    id: locked.id,
+    value: "공포 영화를 싫어한다",
+    locked: true,
+  });
+});
+
+test("room-wide redaction covers non-speakers and duplicate display names deterministically", () => {
+  const chunk: MemoryChunk = {
+    id: "chunk-1",
+    roomId: "room-1",
+    startedAt: new Date("2026-08-07T00:00:00Z"),
+    endedAt: new Date("2026-08-07T00:01:00Z"),
+    turns: [{
+      id: "turn-1",
+      participantId: "p1",
+      participantName: "지훈",
+      messages: [{ kind: "text", text: "민수와 수빈에게 민 얘기도 전해줘" }],
+    }],
+  };
+  const redacted = redactChunkForEmbedding(chunk, [
+    { id: "p1", name: "지훈" },
+    { id: "p3", name: "민수" },
+    { id: "p2", name: "민수" },
+    { id: "p4", name: "수빈" },
+    { id: "p5", name: "민" },
+  ]);
+
+  expect(redacted).toContain("[participants:p2|p3]");
+  expect(redacted).toContain("[participant:p4]");
+  expect(redacted).toContain("[participant:p5]");
+  expect(redacted).not.toMatch(/민수|수빈|민 얘기/);
+});
+
+test("an incomplete extraction retries idempotently and repairs facts and room memory", async () => {
+  const chunk: MemoryChunk = {
+    id: "chunk-retry",
+    roomId: "room-retry",
+    startedAt: new Date("2026-08-07T00:00:00Z"),
+    endedAt: new Date("2026-08-07T00:02:00Z"),
+    turns: [{
+      id: "turn-retry",
+      participantId: "participant-1",
+      participantName: "민수",
+      messages: [{ kind: "text", text: "민수는 영화 얘기를 자주 한다" }],
+    }],
+  };
+  const chunkAnalysis = {
+    topicTags: ["영화"],
+    eventTypes: ["daily_chat"],
+    emotions: ["흥미"],
+    relationshipSignals: [],
+    summary: "영화 이야기를 나눴다",
+    candidateProfileFacts: [{
+      participantId: "participant-1",
+      targetFactId: null,
+      kind: "interest",
+      value: "영화를 좋아한다",
+      conditions: [],
+      exceptions: [],
+      confidence: 0.82,
+      evidenceTurnIds: ["turn-retry"],
+    }],
+  };
+  const topicAnalysis = {
+    topics: [{
+      key: "movies",
+      tags: ["영화"],
+      childChunkIds: ["chunk-retry"],
+      summary: "영화 관심사를 반복해서 이야기한다",
+    }],
+  };
+  const memoryRepository = new InMemoryMemoryRepository([chunk]);
+  const profileRepository = new InMemoryProfileRepository();
+  const gateway = new FakeGateway([
+    chunkAnalysis,
+    topicAnalysis,
+    new Error("room summary unavailable"),
+    chunkAnalysis,
+    topicAnalysis,
+    { summary: "영화 이야기가 자주 등장하는 친근한 방" },
+  ]);
+  const dependencies = { repository: memoryRepository, profileRepository, gateway };
+
+  await expect(extractRoomMemory("room-retry", dependencies)).rejects.toThrow("room summary unavailable");
+  expect(profileRepository.facts).toHaveLength(1);
+  expect(memoryRepository.roomMemory).toBeUndefined();
+  expect(decryptJson<ChunkMemoryPayload>(memoryRepository.chunkUpdates.at(-1)!.encryptedSummary)
+    .analysisComplete).toBe(false);
+
+  await expect(extractRoomMemory("room-retry", dependencies)).resolves.toMatchObject({
+    roomId: "room-retry",
+    updatedChunkIds: ["chunk-retry"],
+  });
+  expect(profileRepository.facts).toHaveLength(1);
+  expect((await new ProfileService(profileRepository).listProfileFacts("participant-1")))
+    .toEqual([expect.objectContaining({ kind: "interest", value: "영화를 좋아한다" })]);
+  expect(decryptJson<ChunkMemoryPayload>(memoryRepository.chunkUpdates.at(-1)!.encryptedSummary)
+    .analysisComplete).toBe(true);
+  expect(decryptJson<RoomMemoryPayload>(memoryRepository.roomMemory!.encryptedSummary)).toMatchObject({
+    version: 1,
+    topics: [expect.objectContaining({ key: "movies", childChunkIds: ["chunk-retry"] })],
+    summary: "영화 이야기가 자주 등장하는 친근한 방",
+  });
 });
 
 test("profile API routes require an authenticated session before reading profiles", async () => {

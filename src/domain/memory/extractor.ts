@@ -50,11 +50,17 @@ export type MemoryChunk = {
   turns: MemoryTurn[];
 };
 
+export type RoomParticipantIdentity = {
+  id: string;
+  name: string;
+};
+
 export type ChunkMemoryPayload = {
   summary: string;
   emotions: string[];
   relationshipSignals: string[];
   sourceFingerprint: string;
+  analysisComplete: boolean;
 };
 
 export type ChunkMemoryUpdate = {
@@ -72,11 +78,25 @@ export type StoredChunkMemory = ChunkMemoryPayload & {
   eventTypes: string[];
 };
 
+export type TopicMemory = {
+  key: string;
+  tags: string[];
+  childChunkIds: string[];
+  summary: string;
+};
+
+export type RoomMemoryPayload = {
+  version: 1;
+  topics: TopicMemory[];
+  summary: string;
+};
+
 export interface MemoryRepository {
-  /** Returns only chunks that the adapter considers new or changed. */
+  /** Returns chunks whose source changed or whose downstream analysis is incomplete. */
   listChunksForAnalysis(roomId: string): Promise<MemoryChunk[]>;
+  listRoomParticipants(roomId: string): Promise<RoomParticipantIdentity[]>;
   updateChunkMemory(update: ChunkMemoryUpdate): Promise<void>;
-  listChunkMemories?(roomId: string): Promise<StoredChunkMemory[]>;
+  listChunkMemories(roomId: string): Promise<StoredChunkMemory[]>;
   upsertRoomMemory(roomId: string, encryptedSummary: string): Promise<void>;
 }
 
@@ -89,8 +109,17 @@ export function createDrizzleMemoryRepository(
   database: NodePgDatabase<typeof import("@/db/schema")> = getDb(),
 ): MemoryRepository {
   const executor = database as DrizzleExecutor;
+  async function roomParticipantIdentities(roomId: string): Promise<RoomParticipantIdentity[]> {
+    const rows = await executor.select({
+      id: participants.id,
+      encryptedName: participants.encryptedName,
+    }).from(participants).where(eq(participants.roomId, roomId));
+    return rows.map((row) => ({ id: row.id, name: decryptJson<string>(row.encryptedName) }));
+  }
+
   return {
     async listChunksForAnalysis(roomId) {
+      const roomParticipants = await roomParticipantIdentities(roomId);
       const storedChunks = await executor.select({
         id: chunks.id,
         roomId: chunks.roomId,
@@ -149,9 +178,12 @@ export function createDrizzleMemoryRepository(
       return loaded.filter(({ memoryChunk, encryptedSummary }) => {
         const previous = decryptJson<Partial<ChunkMemoryPayload> | string>(encryptedSummary);
         return typeof previous === "string"
-          || previous.sourceFingerprint !== chunkSourceFingerprint(memoryChunk);
+          || previous.analysisComplete !== true
+          || previous.sourceFingerprint !== chunkSourceFingerprint(memoryChunk, roomParticipants);
       }).map(({ memoryChunk }) => memoryChunk);
     },
+
+    listRoomParticipants: roomParticipantIdentities,
 
     async updateChunkMemory(update) {
       await executor.update(chunks).set({
@@ -173,11 +205,21 @@ export function createDrizzleMemoryRepository(
       return rows.map((row) => {
         const decoded = decryptJson<ChunkMemoryPayload | string>(row.encryptedSummary);
         const payload = typeof decoded === "string"
-          ? { summary: decoded, emotions: [], relationshipSignals: [], sourceFingerprint: "" }
+          ? {
+            summary: decoded,
+            emotions: [],
+            relationshipSignals: [],
+            sourceFingerprint: "",
+            analysisComplete: false,
+          }
           : decoded;
         return {
           chunkId: row.id,
-          ...payload,
+          summary: payload.summary ?? "",
+          emotions: payload.emotions ?? [],
+          relationshipSignals: payload.relationshipSignals ?? [],
+          sourceFingerprint: payload.sourceFingerprint ?? "",
+          analysisComplete: payload.analysisComplete === true,
           topicTags: decryptJson<string[]>(row.encryptedTopicTags),
           eventTypes: decryptJson<string[]>(row.encryptedEventTypes),
         };
@@ -196,6 +238,7 @@ export function createDrizzleMemoryRepository(
 
 const candidateProfileFactSchema = z.object({
   participantId: z.string().min(1),
+  targetFactId: z.string().min(1).nullable(),
   kind: z.enum(profileFactKinds),
   value: z.string().trim().min(1),
   conditions: z.array(z.string()),
@@ -213,6 +256,15 @@ const chunkAnalysisSchema = z.object({
   candidateProfileFacts: z.array(candidateProfileFactSchema),
 });
 
+const topicMemorySchema = z.object({
+  topics: z.array(z.object({
+    key: z.string().trim().min(1),
+    tags: z.array(z.string()),
+    childChunkIds: z.array(z.string().min(1)).min(1),
+    summary: z.string().trim().min(1),
+  })).min(1),
+});
+
 const roomSummarySchema = z.object({ summary: z.string().trim().min(1) });
 
 export type MemoryExtractorDependencies = {
@@ -225,32 +277,81 @@ function replaceAllLiteral(text: string, search: string, replacement: string): s
   return search ? text.split(search).join(replacement) : text;
 }
 
-/** Stable participant IDs replace names in every string sent for embedding. */
-export function redactChunkForEmbedding(chunk: MemoryChunk): string {
-  const nameTokens = [...new Map(chunk.turns.map((turn) => [turn.participantName, turn.participantId])).entries()]
-    .sort(([left], [right]) => right.length - left.length);
+function participantNameTokens(roomParticipants: RoomParticipantIdentity[]): Array<[string, string]> {
+  const idsByName = new Map<string, string[]>();
+  for (const participant of roomParticipants) {
+    const ids = idsByName.get(participant.name) ?? [];
+    ids.push(participant.id);
+    idsByName.set(participant.name, ids);
+  }
+  return [...idsByName.entries()].map(([name, ids]): [string, string] => {
+    const sortedIds = [...ids].sort();
+    const token = sortedIds.length === 1
+      ? `[participant:${sortedIds[0]}]`
+      : `[participants:${sortedIds.join("|")}]`;
+    return [name, token];
+  }).sort(([left], [right]) => right.length - left.length || left.localeCompare(right));
+}
+
+/** Every room participant name is replaced before model or embedding use. */
+export function redactChunkForEmbedding(
+  chunk: MemoryChunk,
+  roomParticipants: RoomParticipantIdentity[],
+): string {
+  const nameTokens = participantNameTokens(roomParticipants);
   return chunk.turns.map((turn) => {
     const content = turn.messages.map((message) => `${message.kind}:${message.text}`).join(" ");
     const redacted = nameTokens.reduce(
-      (text, [name, participantId]) => replaceAllLiteral(text, name, `[participant:${participantId}]`),
+      (text, [name, token]) => replaceAllLiteral(text, name, token),
       content,
     );
     return `[turn:${turn.id}] [participant:${turn.participantId}] ${redacted}`;
   }).join("\n");
 }
 
-function chunkSourceFingerprint(chunk: MemoryChunk): string {
-  return createHash("sha256").update(redactChunkForEmbedding(chunk)).digest("hex");
+function chunkSourceFingerprint(
+  chunk: MemoryChunk,
+  roomParticipants: RoomParticipantIdentity[],
+): string {
+  return createHash("sha256").update(redactChunkForEmbedding(chunk, roomParticipants)).digest("hex");
 }
 
-function validateEvidence(chunk: MemoryChunk, fact: AiProfileFact): void {
-  const participantsInChunk = new Set(chunk.turns.map((turn) => turn.participantId));
+function validateEvidence(
+  chunk: MemoryChunk,
+  fact: AiProfileFact,
+  roomParticipants: RoomParticipantIdentity[],
+  existingFacts: ProfileFactView[],
+): void {
+  const participantsInRoom = new Set(roomParticipants.map((participant) => participant.id));
   const turnsInChunk = new Set(chunk.turns.map((turn) => turn.id));
-  if (!participantsInChunk.has(fact.participantId)) {
-    throw new Error("AI profile fact references a participant outside the chunk");
+  if (!participantsInRoom.has(fact.participantId)) {
+    throw new Error("AI profile fact references a participant outside the room");
   }
   if (fact.evidenceTurnIds.some((turnId) => !turnsInChunk.has(turnId))) {
     throw new Error("AI profile fact references evidence outside the chunk");
+  }
+  if (fact.targetFactId) {
+    const target = existingFacts.find((candidate) => candidate.id === fact.targetFactId);
+    if (!target || target.participantId !== fact.participantId || target.kind !== fact.kind) {
+      throw new Error("AI profile target must match the same participant and fact kind");
+    }
+  }
+}
+
+function validateTopicMemories(topics: TopicMemory[], chunksToCover: StoredChunkMemory[]): void {
+  const knownChunkIds = new Set(chunksToCover.map((chunk) => chunk.chunkId));
+  const coveredChunkIds = new Set<string>();
+  const topicKeys = new Set<string>();
+  for (const topic of topics) {
+    if (topicKeys.has(topic.key)) throw new Error("Topic memory keys must be unique");
+    topicKeys.add(topic.key);
+    for (const chunkId of topic.childChunkIds) {
+      if (!knownChunkIds.has(chunkId)) throw new Error("Topic memory references an unknown chunk");
+      coveredChunkIds.add(chunkId);
+    }
+  }
+  if ([...knownChunkIds].some((chunkId) => !coveredChunkIds.has(chunkId))) {
+    throw new Error("Topic memories must cover every room chunk");
   }
 }
 
@@ -271,9 +372,15 @@ export async function extractRoomMemory(
     return { roomId, updatedChunkIds: [], proposedFacts: [] };
   }
 
+  const roomParticipants = await dependencies.repository.listRoomParticipants(roomId);
+  const profileService = new ProfileService(dependencies.profileRepository);
+  const existingProfileFacts = (await Promise.all(roomParticipants.map((participant) => (
+    profileService.listProfileFacts(participant.id)
+  )))).flat();
+
   const analyses = [];
   for (const chunk of pendingChunks) {
-    const redactedText = redactChunkForEmbedding(chunk);
+    const redactedText = redactChunkForEmbedding(chunk, roomParticipants);
     const analysis = await dependencies.gateway.extract({
       purpose: "analysis",
       schemaName: "conversation_chunk_memory",
@@ -281,6 +388,7 @@ export async function extractRoomMemory(
       system: [
         "Extract only evidence-grounded conversation memory.",
         "Use supplied stable participant and turn IDs verbatim.",
+        "Set targetFactId only to a supplied same-participant, same-kind fact that this result updates or contradicts; otherwise use null.",
         "Media and deleted events are weak evidence and must not support personality claims alone.",
         "Every candidate profile fact needs one or more evidence turn IDs and confidence from 0 through 1.",
       ].join(" "),
@@ -288,64 +396,120 @@ export async function extractRoomMemory(
         roomId,
         chunkId: chunk.id,
         conversation: redactedText,
+        existingProfileFacts: existingProfileFacts.map((fact) => ({
+          id: fact.id,
+          participantId: fact.participantId,
+          kind: fact.kind,
+          value: fact.value,
+        })),
       }),
     });
-    for (const fact of analysis.candidateProfileFacts) validateEvidence(chunk, fact);
+    for (const fact of analysis.candidateProfileFacts) {
+      validateEvidence(chunk, fact, roomParticipants, existingProfileFacts);
+    }
     analyses.push({ chunk, redactedText, analysis });
   }
 
   const embeddings = await dependencies.gateway.embed(analyses.map((item) => item.redactedText));
   if (embeddings.length !== analyses.length) throw new Error("Embedding count did not match chunk count");
 
-  const profileService = new ProfileService(dependencies.profileRepository);
   const proposedFacts: ProfileFactView[] = [];
-  for (let index = 0; index < analyses.length; index += 1) {
-    const item = analyses[index]!;
+
+  const updates = analyses.map((item, index) => {
     const embedding = embeddings[index];
     if (!embedding || embedding.length === 0) throw new Error("Model returned an empty embedding");
-    await dependencies.repository.updateChunkMemory({
-      roomId,
-      chunkId: item.chunk.id,
-      encryptedSummary: encryptJson<ChunkMemoryPayload>({
-        summary: item.analysis.summary,
-        emotions: item.analysis.emotions,
-        relationshipSignals: item.analysis.relationshipSignals,
-        sourceFingerprint: chunkSourceFingerprint(item.chunk),
-      }),
+    return {
+      item,
+      embedding,
       encryptedTopicTags: encryptJson(item.analysis.topicTags),
       encryptedEventTypes: encryptJson(item.analysis.eventTypes),
-      embedding,
+    };
+  });
+
+  // A fingerprint alone is not a completion marker. Persist the analyzed
+  // content as incomplete before any downstream profile or hierarchy writes.
+  for (const update of updates) {
+    await dependencies.repository.updateChunkMemory({
+      roomId,
+      chunkId: update.item.chunk.id,
+      encryptedSummary: encryptJson<ChunkMemoryPayload>({
+        summary: update.item.analysis.summary,
+        emotions: update.item.analysis.emotions,
+        relationshipSignals: update.item.analysis.relationshipSignals,
+        sourceFingerprint: chunkSourceFingerprint(update.item.chunk, roomParticipants),
+        analysisComplete: false,
+      }),
+      encryptedTopicTags: update.encryptedTopicTags,
+      encryptedEventTypes: update.encryptedEventTypes,
+      embedding: update.embedding,
     });
+  }
+
+  for (let index = 0; index < analyses.length; index += 1) {
+    const item = analyses[index]!;
     for (const candidate of item.analysis.candidateProfileFacts) {
       proposedFacts.push(await profileService.applyAiInference(candidate));
     }
   }
 
-  const storedChildMemories = dependencies.repository.listChunkMemories
-    ? await dependencies.repository.listChunkMemories(roomId)
-    : analyses.map(({ chunk, analysis }) => ({
-      chunkId: chunk.id,
-      summary: analysis.summary,
-      topicTags: analysis.topicTags,
-      eventTypes: analysis.eventTypes,
-      emotions: analysis.emotions,
-      relationshipSignals: analysis.relationshipSignals,
-      sourceFingerprint: chunkSourceFingerprint(chunk),
-    }));
+  const storedChildMemories = await dependencies.repository.listChunkMemories(roomId);
+  const topicResult = await dependencies.gateway.extract({
+    purpose: "analysis",
+    schemaName: "topic_memories",
+    schema: topicMemorySchema,
+    system: [
+      "Synthesize explicit topic memories from all room chunk memories.",
+      "Every child chunk ID must appear in at least one topic, and topic keys must be stable and unique.",
+      "Use only supplied child chunk IDs.",
+    ].join(" "),
+    input: JSON.stringify({
+      roomId,
+      childMemories: storedChildMemories.map(({
+        sourceFingerprint: _sourceFingerprint,
+        analysisComplete: _analysisComplete,
+        ...memory
+      }) => memory),
+    }),
+  });
+  validateTopicMemories(topicResult.topics, storedChildMemories);
+
   const roomMemory = await dependencies.gateway.extract({
     purpose: "analysis",
     schemaName: "room_memory",
     schema: roomSummarySchema,
     system: [
-      "Build a hierarchical room summary from child chunk memories only.",
+      "Build a hierarchical room summary from topic memories only.",
       "Capture relationship structure, atmosphere, recurring events, nicknames, jokes, sensitive topics, and major changes when supported.",
     ].join(" "),
     input: JSON.stringify({
       roomId,
-      childMemories: storedChildMemories.map(({ sourceFingerprint: _sourceFingerprint, ...memory }) => memory),
+      topicMemories: topicResult.topics,
     }),
   });
-  await dependencies.repository.upsertRoomMemory(roomId, encryptJson(roomMemory.summary));
+  await dependencies.repository.upsertRoomMemory(roomId, encryptJson<RoomMemoryPayload>({
+    version: 1,
+    topics: topicResult.topics,
+    summary: roomMemory.summary,
+  }));
+
+  // Completion is the final write. Any earlier failure leaves these chunks
+  // retryable even when their source fingerprint is unchanged.
+  for (const update of updates) {
+    await dependencies.repository.updateChunkMemory({
+      roomId,
+      chunkId: update.item.chunk.id,
+      encryptedSummary: encryptJson<ChunkMemoryPayload>({
+        summary: update.item.analysis.summary,
+        emotions: update.item.analysis.emotions,
+        relationshipSignals: update.item.analysis.relationshipSignals,
+        sourceFingerprint: chunkSourceFingerprint(update.item.chunk, roomParticipants),
+        analysisComplete: true,
+      }),
+      encryptedTopicTags: update.encryptedTopicTags,
+      encryptedEventTypes: update.encryptedEventTypes,
+      embedding: update.embedding,
+    });
+  }
 
   return {
     roomId,
