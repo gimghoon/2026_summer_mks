@@ -5,6 +5,7 @@ const postgresDatabaseUrl = process.env.E2E_DATABASE_URL
   ? requireSafePostgresTestUrl(process.env.E2E_DATABASE_URL)
   : null;
 const postgresDeletionMode = postgresDatabaseUrl !== null;
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -16,13 +17,16 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: "line",
   use: {
-    baseURL: "http://127.0.0.1:3210",
+    baseURL: "http://localhost:3210",
+    launchOptions: chromiumExecutablePath
+      ? { executablePath: chromiumExecutablePath }
+      : undefined,
     permissions: ["clipboard-read", "clipboard-write"],
     trace: "retain-on-failure",
   },
   webServer: {
     command: "pnpm --config.verify-deps-before-run=false dev --hostname 127.0.0.1 --port 3210",
-    url: "http://127.0.0.1:3210/api/health",
+    url: "http://localhost:3210/api/health",
     reuseExistingServer: false,
     timeout: 120_000,
     env: {

@@ -1,0 +1,67 @@
+# MVP acceptance checklist
+
+## Evidence boundary
+
+- Verified source base: `f5b4069` plus the Task 12 acceptance diff (Playwright origin/executable configuration, stronger E2E locators, acceptance tests, and documentation).
+- Evidence date: 2026-08-10, Asia/Seoul.
+- Runtime preamble for every pnpm command: `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH` because the desktop shell did not expose `node` directly.
+- Each row names a literal command ID from the command register below. The source hash is repeated per requirement as requested; the final documentation commit cannot contain its own hash without changing that hash.
+
+## Command register
+
+| ID | Exact command | Observed result |
+| --- | --- | --- |
+| C1 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm vitest run tests/integration/import-service.test.ts` | Exit 0; 1 file, 2 tests passed. |
+| C2 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm vitest run tests/integration/profile-service.test.ts` | Exit 0; 1 file, 16 tests passed. |
+| C3 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm vitest run tests/integration/reply-service.test.ts` | Exit 0; 1 file, 13 tests passed. |
+| C4 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm vitest run tests/integration/room-deletion.test.ts` | Exit 0; 1 file, 4 tests passed. |
+| C5 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm vitest run tests/unit/kakao-parser.test.ts tests/unit/context-expander.test.ts tests/unit/style-policy.test.ts tests/unit/encrypted-json.test.ts tests/unit/schema-contract.test.ts tests/unit/logger.test.ts tests/unit/playwright-config.test.ts tests/integration/context-repository.test.ts tests/integration/private-workflow-security.test.ts tests/integration/reply-production-policy.test.ts tests/integration/replies-route.test.ts` | Exit 0; 11 files, 67 tests passed. |
+| C6 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' /usr/bin/perl -e '$SIG{ALRM}=sub{die "bounded E2E timeout after 180 seconds\n"}; alarm 180; exec @ARGV or die $!' pnpm playwright test tests/e2e/private-reply-flow.spec.ts tests/e2e/data-deletion.spec.ts` | Exit 0 outside the port-binding sandbox; 2 browser tests passed in system Chrome. |
+| C7 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm test` | Exit 0; 20 files, 86 unit tests passed. |
+| C8 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm test:integration` | Exit 0; 9 files, 70 integration tests passed. |
+| C9 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm exec tsc --noEmit` | Exit 0 when run sequentially after build artifact generation. |
+| C10 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm build` | Exit 0; production compilation, type validation, page generation, and route emission completed. |
+| C11 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm vitest run tests/unit/postgres-e2e-safety.test.ts` | Exit 0; 1 safety test passed. |
+| C12 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH E2E_DATABASE_URL='postgresql://fixture:fixture@127.0.0.1:5432/private_reply_e2e_test' pnpm playwright test --list` | Exit 0; PostgreSQL mode selected only `postgres-data-deletion.spec.ts` (1 test). Discovery only; no connection was made. |
+| C13 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm test:e2e:postgres` | Exit 1 before Playwright: `E2E_DATABASE_URL is required for PostgreSQL deletion E2E`. No PostgreSQL database was provisioned, so no live PostgreSQL result is claimed. |
+| C14 | `rg -n 'T''BD|T''ODO|F''IXME|implement l''ater' README.md docs src tests` | Exit 1 with no matches. |
+| C15 | `rg -n "console\.(log|error)|JSON\.stringify\((message|profile|prompt)" src` | Exit 1 with no matches. No framework-bootstrap exception was needed. |
+
+## Design section 11 acceptance mapping
+
+| # | Requirement | Test file(s) | Exact command | Observed result | Commit hash |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Parse KakaoTalk `.txt` and handle an additional upload to the same room. | `tests/unit/kakao-parser.test.ts`, `tests/integration/import-service.test.ts` | C1, C5 | Pass: parser cases are included in C5; C1 passed 2/2, including same-room re-import. | `f5b4069` + Task 12 diff |
+| 2 | Produce long-term room memory and evidence-backed participant profiles. | `tests/integration/profile-service.test.ts` | C2 | Pass: 16/16 cover hierarchical memory, evidence, confidence, provenance, encryption, retries, and rollback. | `f5b4069` + Task 12 diff |
+| 3 | Support both direct profile editing and confirmed AI correction chat. | `tests/integration/profile-service.test.ts`, `tests/e2e/private-reply-flow.spec.ts` | C2, C6 | Pass: direct locked edits, proposed corrections, explicit confirmation, and browser persistence all completed. | `f5b4069` + Task 12 diff |
+| 4 | Accept current conversation, situation, and reply purpose. | `tests/integration/replies-route.test.ts`, `tests/e2e/private-reply-flow.spec.ts` | C5, C6 | Pass: strict request validation and the browser composer flow completed. | `f5b4069` + Task 12 diff |
+| 5 | Adaptive current-context selection and relevant past retrieval work. | `tests/unit/context-expander.test.ts`, `tests/integration/context-repository.test.ts`, `tests/integration/reply-production-policy.test.ts` | C5 | Pass: C5 passed 67/67, including expansion, room-local hybrid ranking, clarification, and reviewed-fact authority. | `f5b4069` + Task 12 diff |
+| 6 | Generate three strategically different replies at the selected indirectness. | `tests/unit/style-policy.test.ts`, `tests/integration/reply-service.test.ts`, `tests/e2e/private-reply-flow.spec.ts` | C3, C5, C6 | Pass: C3 passed 13/13 and browser output contained exactly three candidates with generation and clarification paths. | `f5b4069` + Task 12 diff |
+| 7 | Keep female-friend and girlfriend styles separate. | `tests/unit/style-policy.test.ts`, `tests/integration/reply-service.test.ts`, `tests/fixtures/style-evaluation.json` | C3, C5 | Pass: friend romantic/jealous/possessive cues are forbidden; the fixture covers both relationship modes. | `f5b4069` + Task 12 diff |
+| 8 | Delete source and analyzed data, and support analysis replay. | `tests/integration/room-deletion.test.ts`, `tests/integration/profile-service.test.ts`, `tests/e2e/data-deletion.spec.ts` | C2, C4, C6 | Pass in integration and encrypted fixture-browser modes: deletion counts reached zero and profile analysis replay/retry remained idempotent. Live PostgreSQL is tracked separately below. | `f5b4069` + Task 12 diff |
+| 9 | Prepared evaluations do not mix people, relationships, or events. | `tests/integration/profile-service.test.ts`, `tests/integration/context-repository.test.ts`, `tests/unit/style-policy.test.ts`, `tests/fixtures/style-evaluation.json` | C2, C5 | Pass: cross-participant/cross-kind targets are rejected, retrieval is room-local, and 24 synthetic cases carry explicit relationship and semantic outcome fields. | `f5b4069` + Task 12 diff |
+| 10 | Conversation plaintext is absent from logs and stored private data is encrypted. | `tests/unit/encrypted-json.test.ts`, `tests/unit/logger.test.ts`, `tests/integration/private-workflow-security.test.ts` | C5, C15 | Pass: encryption round trips without plaintext leakage, logger metadata is scalar-only, fixture storage contains no private substrings, and the source scan found no unsafe logging call. | `f5b4069` + Task 12 diff |
+
+## Explicit supplemental requirements
+
+| Requirement | Test file(s) | Exact command | Observed result | Commit hash |
+| --- | --- | --- | --- | --- |
+| Female-friend / girlfriend separation | `tests/unit/style-policy.test.ts`, `tests/integration/reply-service.test.ts`, `tests/fixtures/style-evaluation.json` | C3, C5 | Pass: friend-only prohibitions and both relationship fixture modes verified. | `f5b4069` + Task 12 diff |
+| Indirectness level 1 | `tests/unit/style-policy.test.ts`, `tests/fixtures/style-evaluation.json` | C5 | Pass: fixture level set is exactly 1–5; level 1 direct-device policy is exercised. | `f5b4069` + Task 12 diff |
+| Indirectness level 2 | `tests/unit/style-policy.test.ts`, `tests/fixtures/style-evaluation.json` | C5 | Pass: fixture level set is exactly 1–5 and contains level 2 cases. | `f5b4069` + Task 12 diff |
+| Indirectness level 3 | `tests/unit/style-policy.test.ts`, `tests/fixtures/style-evaluation.json` | C5 | Pass: fixture level set is exactly 1–5 and contains default level 3 cases. | `f5b4069` + Task 12 diff |
+| Indirectness level 4 | `tests/unit/style-policy.test.ts`, `tests/fixtures/style-evaluation.json` | C5 | Pass: fixture level set is exactly 1–5 and contains level 4 emotion-clue cases. | `f5b4069` + Task 12 diff |
+| Indirectness level 5 | `tests/unit/style-policy.test.ts`, `tests/integration/reply-service.test.ts`, `tests/fixtures/style-evaluation.json` | C3, C5 | Pass: level 5 remains explicit for money, consent, safety, rejection, and important promises. | `f5b4069` + Task 12 diff |
+| Encrypted storage | `tests/unit/encrypted-json.test.ts`, `tests/integration/private-workflow-security.test.ts`, `tests/integration/profile-service.test.ts` | C2, C5 | Pass: AES-GCM payloads hide Korean plaintext; stored fixture and profile payloads are encrypted. | `f5b4069` + Task 12 diff |
+| No plaintext logs | `tests/unit/logger.test.ts`, `tests/integration/replies-route.test.ts` | C5, C15 | Pass: scalar-only metadata tests passed and the privacy scan returned no matches. | `f5b4069` + Task 12 diff |
+| Import idempotency | `tests/integration/import-service.test.ts`, `tests/unit/schema-contract.test.ts` | C1, C5 | Pass: re-import stores messages once and schema enforces `(room_id, source_fingerprint)` uniqueness. | `f5b4069` + Task 12 diff |
+| Adaptive 20 / 40 / 80 / full expansion | `tests/unit/context-expander.test.ts` | C5 | Pass: the complete `20, 40, 80, 100` call sequence and `full_chunk` result are asserted. | `f5b4069` + Task 12 diff |
+| Deletion cascades | `tests/unit/schema-contract.test.ts`, `tests/integration/room-deletion.test.ts`, `tests/e2e/data-deletion.spec.ts` | C4, C5, C6 | Pass for schema, route, and encrypted fixture-browser modes; all fixture counts reached zero. | `f5b4069` + Task 12 diff |
+
+## PostgreSQL mode and deployment gate
+
+PostgreSQL safety and discovery are verified by C11 and C12. C13 proves the runner fails closed when no dedicated test database URL is supplied. Because this workspace has no provisioned PostgreSQL database, `postgres-data-deletion.spec.ts` was not executed and no live PostgreSQL cascade claim is made. Before private deployment, provision a disposable database whose name contains a standalone `test` marker and run `pnpm test:e2e:postgres`; that command must exit 0.
+
+## Overall result
+
+The source, unit, integration, production-build, scan, and encrypted fixture-browser acceptance gates pass for this private single-user MVP. Live PostgreSQL deletion remains an explicit deployment-environment gate rather than fabricated local evidence.

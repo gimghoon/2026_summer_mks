@@ -61,6 +61,7 @@ test("personal chat devices are enabled only by supporting memory", () => {
 
 test("evaluation fixture has four synthetic cases in every required category", () => {
   expect(evaluationCases).toHaveLength(24);
+  expect([...new Set(evaluationCases.map((item) => item.indirectness))].sort()).toEqual([1, 2, 3, 4, 5]);
   for (const category of [
     "everyday",
     "lateness_or_promise",
