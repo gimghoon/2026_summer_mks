@@ -155,7 +155,6 @@ function normalizeForDistinctness(text: string): string {
 
 function contextTexts(command: GenerateRepliesCommand, context: ReplyGenerationContext): string[] {
   return [
-    command.pastedConversation,
     command.situation,
     command.intent,
     context.roomMemory ?? "",
@@ -256,11 +255,15 @@ function preservesExplicitIntent(intent: string, text: string): boolean {
 function modelContext(context: ReplyGenerationContext) {
   return {
     currentTurns: context.currentContext.turns.map((turn) => ({
+      speakerId: turn.speakerId,
+      startedAt: turn.startedAt,
       messages: turn.messages.map((message) => ({ kind: message.kind, text: message.text })),
     })),
     retrievedHistory: context.retrievedChunks.map((chunk) => ({
       summary: chunk.summary,
       turns: chunk.turns.map((turn) => ({
+        speakerId: turn.speakerId,
+        startedAt: turn.startedAt,
         messages: turn.messages.map((message) => ({ kind: message.kind, text: message.text })),
       })),
     })),
@@ -349,7 +352,6 @@ export class ReplyService {
           schema: generatedReplySchema,
           system: generationSystem(policy),
           input: JSON.stringify({
-            pastedConversation: command.pastedConversation,
             situation: command.situation,
             intent: command.intent,
             indirectness: command.indirectness,

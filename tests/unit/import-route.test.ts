@@ -33,11 +33,16 @@ afterEach(() => vi.unstubAllEnvs());
 const multipartBoundary = "import-boundary";
 const encoder = new TextEncoder();
 
-function multipartBody(selfName: string | undefined, file: Uint8Array): ArrayBuffer {
+function multipartBody(selfName: string | undefined, file: Uint8Array, existingRoomId?: string): ArrayBuffer {
   const parts: Uint8Array[] = [];
   if (selfName !== undefined) {
     parts.push(encoder.encode(
       `--${multipartBoundary}\r\nContent-Disposition: form-data; name="selfName"\r\n\r\n${selfName}\r\n`,
+    ));
+  }
+  if (existingRoomId !== undefined) {
+    parts.push(encoder.encode(
+      `--${multipartBoundary}\r\nContent-Disposition: form-data; name="existingRoomId"\r\n\r\n${existingRoomId}\r\n`,
     ));
   }
   parts.push(encoder.encode(
@@ -124,4 +129,40 @@ test("refuses a multipart file larger than 50 MiB after bounded decoding", async
 
   expect(response.status).toBe(413);
   expect(importKakaoExportMock).not.toHaveBeenCalled();
+});
+
+test("passes a validated existing room UUID to the import service", async () => {
+  const existingRoomId = "11111111-1111-4111-8111-111111111111";
+  importKakaoExportMock.mockResolvedValue({ roomId: existingRoomId, insertedMessages: 1, duplicateMessages: 0, unparsedLines: [] });
+  const response = await POST(await authenticatedRequest(multipartBody(
+    "지훈",
+    encoder.encode("민수와 카카오톡 대화\n2026년 8월 7일 오전 9:01, 민수 : 안녕"),
+    existingRoomId,
+  )));
+
+  expect(response.status).toBe(201);
+  expect(importKakaoExportMock).toHaveBeenCalledWith(expect.objectContaining({ existingRoomId }));
+});
+
+test("rejects a malformed existing room ID before import", async () => {
+  const response = await POST(await authenticatedRequest(multipartBody(
+    "지훈",
+    encoder.encode("민수와 카카오톡 대화\n2026년 8월 7일 오전 9:01, 민수 : 안녕"),
+    "not-a-uuid",
+  )));
+
+  expect(response.status).toBe(400);
+  expect(importKakaoExportMock).not.toHaveBeenCalled();
+});
+
+test("returns not found when the validated existing room no longer exists", async () => {
+  const existingRoomId = "11111111-1111-4111-8111-111111111111";
+  importKakaoExportMock.mockRejectedValue(new Error("Room not found"));
+  const response = await POST(await authenticatedRequest(multipartBody(
+    "지훈",
+    encoder.encode("민수와 카카오톡 대화\n2026년 8월 7일 오전 9:01, 민수 : 안녕"),
+    existingRoomId,
+  )));
+
+  expect(response.status).toBe(404);
 });

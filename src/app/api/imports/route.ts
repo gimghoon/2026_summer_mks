@@ -14,6 +14,10 @@ import {
 
 const importFormSchema = z.object({
   selfName: z.string().trim().min(1, "selfName is required"),
+  existingRoomId: z.preprocess(
+    (value) => value === "" || value === null ? undefined : value,
+    z.string().uuid().optional(),
+  ),
 });
 
 class ImportBodyTooLargeError extends Error {}
@@ -82,7 +86,10 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "Invalid import request" }, { status: 400 });
   }
 
-  const form = importFormSchema.safeParse({ selfName: formData.get("selfName") });
+  const form = importFormSchema.safeParse({
+    selfName: formData.get("selfName"),
+    existingRoomId: formData.get("existingRoomId"),
+  });
   if (!form.success) return badRequest(form.error);
 
   const file = formData.get("file");
@@ -100,8 +107,26 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "Invalid import request", issues: { formErrors: ["conversation title is required"] } }, { status: 400 });
   }
 
-  const summary = fixtureModeEnabled()
-    ? importFixtureRoom({ title, selfName: form.data.selfName, rawText })
-    : await importKakaoExport({ title, selfName: form.data.selfName, rawText });
+  let summary;
+  try {
+    summary = fixtureModeEnabled()
+      ? importFixtureRoom({
+        title,
+        selfName: form.data.selfName,
+        rawText,
+        existingRoomId: form.data.existingRoomId,
+      })
+      : await importKakaoExport({
+        title,
+        selfName: form.data.selfName,
+        rawText,
+        existingRoomId: form.data.existingRoomId,
+      });
+  } catch (error) {
+    if (error instanceof Error && error.message === "Room not found") {
+      return new Response("Not found", { status: 404 });
+    }
+    throw error;
+  }
   return Response.json(summary, { status: 201 });
 }

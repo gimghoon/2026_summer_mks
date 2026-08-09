@@ -8,6 +8,13 @@ import {
   type StoredMessage,
   type TurnToPersist,
 } from "@/domain/imports/import-service";
+import {
+  chunksCoverTurnsExactlyOnce,
+  reconcileRoomChunks,
+  type ChunkPartitionWrite,
+  type ChunkReconciliationRepository,
+  type StoredChunkPartition,
+} from "@/domain/memory/chunk-reconciliation";
 
 function fixture(name: string): string {
   return readFileSync(resolve(process.cwd(), "tests/fixtures/kakao", name), "utf8");
@@ -76,6 +83,29 @@ class InMemoryImportRepository implements ImportRepository {
   }
 }
 
+class ImportedRoomChunks implements ChunkReconciliationRepository {
+  chunks: StoredChunkPartition[] = [];
+  private nextId = 1;
+  async listChunks() { return this.chunks.map((chunk) => ({ ...chunk })); }
+  async insertChunk(_roomId: string, chunk: ChunkPartitionWrite) { this.chunks.push({ id: `chunk-${this.nextId++}`, ...chunk }); }
+  async updateChunk(_roomId: string, chunkId: string, chunk: ChunkPartitionWrite) {
+    const index = this.chunks.findIndex((stored) => stored.id === chunkId);
+    this.chunks[index] = { id: chunkId, ...chunk };
+  }
+  async deleteChunks(_roomId: string, chunkIds: string[]) { this.chunks = this.chunks.filter((chunk) => !chunkIds.includes(chunk.id)); }
+}
+
+function importedTurns(repository: InMemoryImportRepository) {
+  return repository.persistedTurns.map((turn) => {
+    const messageIds = decryptJson<string[]>(turn.encryptedMessageIds);
+    return {
+      id: `turn-${messageIds[0]}`,
+      startedAt: turn.startedAt,
+      endedAt: turn.endedAt,
+    };
+  }).sort((left, right) => left.startedAt.getTime() - right.startedAt.getTime());
+}
+
 const databaseUrl = "postgresql://postgres:postgres@localhost:5432/private_reply_assistant";
 
 beforeEach(() => {
@@ -126,4 +156,48 @@ test("replaces neighboring turns when a late middle message creates new boundari
   const turnMessageIds = repository.persistedTurns.map((turn) => decryptJson<string[]>(turn.encryptedMessageIds));
   expect(turnMessageIds).toEqual([["message-1"], ["message-3"], ["message-2"]]);
   expect(new Set(turnMessageIds.flat()).size).toBe(3);
+});
+
+test("persists legitimate identical same-minute messages and keeps full-export reimport idempotent", async () => {
+  const repository = new InMemoryImportRepository();
+  const rawText = [
+    "민수와 카카오톡 대화",
+    "2026년 8월 7일 오전 9:01, 민수 : 응",
+    "2026년 8월 7일 오전 9:01, 민수 : 응",
+  ].join("\n");
+  const first = await importKakaoExport({ title: "민수와 카카오톡 대화", selfName: "지훈", rawText }, repository);
+  const second = await importKakaoExport({
+    title: "민수와 카카오톡 대화",
+    selfName: "지훈",
+    rawText,
+    existingRoomId: first.roomId,
+  }, repository);
+
+  expect(first).toMatchObject({ insertedMessages: 2, duplicateMessages: 0 });
+  expect(second).toMatchObject({ insertedMessages: 0, duplicateMessages: 2 });
+  expect(repository.messages).toHaveLength(2);
+});
+
+test("incremental import followed by reanalysis reuses the changed chunk without duplicates", async () => {
+  const imports = new InMemoryImportRepository();
+  const analysis = new ImportedRoomChunks();
+  const initial = "민수와 카카오톡 대화\n2026년 8월 7일 오전 9:01, 민수 : 먼저 도착했어";
+  const first = await importKakaoExport({ title: "민수와 대화", selfName: "지훈", rawText: initial }, imports);
+  await reconcileRoomChunks(first.roomId, importedTurns(imports), analysis);
+  const stableChunkId = analysis.chunks[0]!.id;
+
+  const additional = "민수와 카카오톡 대화\n2026년 8월 7일 오전 9:02, 민수 : 커피도 주문할게";
+  await importKakaoExport({
+    title: "민수와 대화",
+    selfName: "지훈",
+    rawText: additional,
+    existingRoomId: first.roomId,
+  }, imports);
+  const turns = importedTurns(imports);
+  await reconcileRoomChunks(first.roomId, turns, analysis);
+  await reconcileRoomChunks(first.roomId, turns, analysis);
+
+  expect(analysis.chunks).toHaveLength(1);
+  expect(analysis.chunks[0]!.id).toBe(stableChunkId);
+  expect(chunksCoverTurnsExactlyOnce(turns, analysis.chunks)).toBe(true);
 });

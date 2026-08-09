@@ -60,3 +60,17 @@ test("ranks room-local hybrid matches before decrypting at most five chunks", as
   expect(otherRelevant[4]!.decrypt).not.toHaveBeenCalled();
   expect(strongest.decrypt).toHaveBeenCalledOnce();
 });
+
+test("excludes a semantically similar group-chat chunk that lacks the required person", async () => {
+  const target = candidate({ chunkId: "target", roomId: "room-a", participantIds: ["participant-a"] });
+  const otherPerson = candidate({ chunkId: "other", roomId: "room-a", participantIds: ["participant-b"] });
+  const repository = new VectorContextRepository({ listRankableChunks: async () => [otherPerson, target] });
+
+  const retrieved = await repository.findRelevant({
+    ...query,
+    requiredParticipantIds: ["participant-a"],
+  });
+
+  expect(retrieved.map((chunk) => chunk.chunkId)).toEqual(["target"]);
+  expect(otherPerson.decrypt).not.toHaveBeenCalled();
+});

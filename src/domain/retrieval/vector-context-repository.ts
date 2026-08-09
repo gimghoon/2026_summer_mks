@@ -80,8 +80,14 @@ export class VectorContextRepository implements ContextRepository {
 
   async findRelevant(query: ContextQuery): Promise<RetrievedChunk[]> {
     const candidates = await this.source.listRankableChunks(query.roomId);
+    const requiredParticipants = normalizedTerms(query.requiredParticipantIds ?? []);
     const ranked: RankedCandidate[] = candidates
       .filter((candidate) => candidate.roomId === query.roomId)
+      .filter((candidate) => {
+        if (requiredParticipants.size === 0) return true;
+        const candidateParticipants = normalizedTerms(candidate.participantIds);
+        return [...requiredParticipants].every((participantId) => candidateParticipants.has(participantId));
+      })
       .map((candidate) => ({ candidate, score: scoreCandidate(candidate, query, this.now()) }))
       .filter(({ score }) => score >= MIN_RELEVANCE_SCORE)
       .sort((left, right) => right.score - left.score || left.candidate.chunkId.localeCompare(right.candidate.chunkId))

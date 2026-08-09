@@ -122,6 +122,21 @@ test("offline browser storage encrypts every private payload and isolates partic
   });
 });
 
+test("fixture additional import reuses the selected room and deduplicates the full export", () => {
+  const rawText = "민수와 카카오톡 대화\n2026년 8월 7일 오전 9:01, 민수 : 안녕";
+  const first = importFixtureRoom({ title: "민수와 대화", selfName: "나", rawText });
+  const second = importFixtureRoom({
+    title: "민수와 대화",
+    selfName: "나",
+    rawText,
+    existingRoomId: first.roomId,
+  });
+
+  expect(second).toMatchObject({ roomId: first.roomId, insertedMessages: 0, duplicateMessages: 1 });
+  expect(fixtureRoomCounts(first.roomId).messages).toBe(1);
+  deleteFixtureRoom(first.roomId);
+});
+
 function importParticipant(roomId: string): string {
   const participant = getFixtureRoom(roomId)?.participants.find((entry) => !entry.isSelf);
   if (!participant) throw new Error("fixture participant missing");

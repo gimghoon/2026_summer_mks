@@ -3,6 +3,8 @@ import { RoomsWorkspace } from "@/components/rooms-workspace";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }), usePathname: () => "/rooms" }));
 
+beforeEach(() => sessionStorage.clear());
+
 test("shows unparsed import lines before analysis can continue", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ roomId: "room-1", unparsedLines: [{ line: 9, text: "형식을 확인해 주세요" }] }) }));
   render(<RoomsWorkspace initialRooms={[]} />);
@@ -14,5 +16,29 @@ test("shows unparsed import lines before analysis can continue", async () => {
   fireEvent.click(screen.getByText("확인할 줄 1개"));
   expect(screen.getByText("형식을 확인해 주세요")).toBeVisible();
   expect(screen.getByRole("button", { name: "검토 후 분석 시작" })).toBeEnabled();
+  vi.unstubAllGlobals();
+});
+
+test("submits an additional upload to the selected existing room", async () => {
+  const roomId = "11111111-1111-4111-8111-111111111111";
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ roomId, unparsedLines: [] }) });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<RoomsWorkspace initialRooms={[{
+    id: roomId,
+    title: "민수와 대화",
+    updatedAt: "2026-08-07T00:00:00.000Z",
+    analysisStatus: "ready",
+    participants: [],
+  }]} />);
+  fireEvent.change(screen.getByLabelText("가져올 대화방"), { target: { value: roomId } });
+  fireEvent.change(screen.getByLabelText("카카오톡 파일 업로드"), {
+    target: { files: [new File(["대화"], "more.txt", { type: "text/plain" })] },
+  });
+  fireEvent.change(screen.getByLabelText("내 이름"), { target: { value: "나" } });
+  fireEvent.click(screen.getByRole("button", { name: "파일 가져오기" }));
+
+  await screen.findByRole("button", { name: "검토 후 분석 시작" });
+  const body = fetchMock.mock.calls[0]![1].body as FormData;
+  expect(body.get("existingRoomId")).toBe(roomId);
   vi.unstubAllGlobals();
 });

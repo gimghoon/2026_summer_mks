@@ -1,8 +1,8 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
 import { getDb } from "@/db/client";
-import { messages, participants, rooms, turns } from "@/db/schema";
+import { chunks, messages, participants, rooms, turns } from "@/db/schema";
 import { decryptJson, encryptJson } from "@/domain/crypto/encrypted-json";
 import {
   parseKakaoExport,
@@ -61,7 +61,7 @@ export interface ImportRepository {
   ): Promise<void>;
 }
 
-type DrizzleExecutor = Pick<NodePgDatabase<typeof import("@/db/schema")>, "select" | "insert" | "delete">;
+type DrizzleExecutor = Pick<NodePgDatabase<typeof import("@/db/schema")>, "select" | "insert" | "update" | "delete">;
 
 function createDrizzleOperations(database: DrizzleExecutor): Omit<ImportRepository, "transaction"> {
   return {
@@ -140,12 +140,88 @@ function createDrizzleOperations(database: DrizzleExecutor): Omit<ImportReposito
         .from(turns)
         .where(eq(turns.roomId, roomId));
       const affected = new Set(affectedMessageIds);
-      const toDelete = existingTurns
-        .filter((turn) => decryptJson<string[]>(turn.encryptedMessageIds).some((id) => affected.has(id)))
-        .map((turn) => turn.id);
-      if (toDelete.length > 0) await database.delete(turns).where(inArray(turns.id, toDelete));
-      if (replacementTurns.length > 0) {
-        await database.insert(turns).values(replacementTurns.map((turn) => ({ roomId, ...turn })));
+      const affectedExisting = existingTurns.filter((turn) => (
+        decryptJson<string[]>(turn.encryptedMessageIds).some((id) => affected.has(id))
+      ));
+      const available = new Set(affectedExisting.map((turn) => turn.id));
+      const existingMessageIds = new Map(affectedExisting.map((turn) => [
+        turn.id,
+        decryptJson<string[]>(turn.encryptedMessageIds),
+      ]));
+      const replacementMessageIds = replacementTurns.map((turn) => decryptJson<string[]>(turn.encryptedMessageIds));
+      const matches = new Map<number, string>();
+      const changedTurnIds = new Set<string>();
+      const choose = (replacementIndex: number, predicate: (messageIds: string[]) => boolean) => {
+        const match = affectedExisting.find((turn) => available.has(turn.id) && predicate(existingMessageIds.get(turn.id) ?? []));
+        if (!match) return false;
+        matches.set(replacementIndex, match.id);
+        available.delete(match.id);
+        return true;
+      };
+      replacementMessageIds.forEach((messageIds, index) => {
+        choose(index, (existingIds) => existingIds.length === messageIds.length && existingIds.every((id, messageIndex) => id === messageIds[messageIndex]));
+      });
+      replacementMessageIds.forEach((messageIds, index) => {
+        if (matches.has(index)) return;
+        choose(index, (existingIds) => existingIds[0] !== undefined && existingIds[0] === messageIds[0]);
+      });
+      replacementMessageIds.forEach((messageIds, index) => {
+        if (matches.has(index)) return;
+        const match = affectedExisting.filter((turn) => available.has(turn.id)).map((turn) => ({
+          id: turn.id,
+          overlap: (existingMessageIds.get(turn.id) ?? []).filter((id) => messageIds.includes(id)).length,
+        })).filter((entry) => entry.overlap > 0)
+          .sort((left, right) => right.overlap - left.overlap || left.id.localeCompare(right.id))[0];
+        if (match) {
+          matches.set(index, match.id);
+          available.delete(match.id);
+        }
+      });
+
+      for (const [index, replacement] of replacementTurns.entries()) {
+        const existingId = matches.get(index);
+        if (existingId) {
+          const previousIds = existingMessageIds.get(existingId) ?? [];
+          if (previousIds.length !== replacementMessageIds[index]!.length || previousIds.some((id, messageIndex) => id !== replacementMessageIds[index]![messageIndex])) {
+            changedTurnIds.add(existingId);
+          }
+          await database.update(turns).set(replacement)
+            .where(eq(turns.id, existingId));
+        } else {
+          const inserted = await database.insert(turns).values({ roomId, ...replacement }).returning({ id: turns.id });
+          if (inserted[0]) changedTurnIds.add(inserted[0].id);
+        }
+      }
+      if (available.size > 0) await database.delete(turns).where(inArray(turns.id, [...available]));
+
+      if (changedTurnIds.size > 0) {
+        const [orderedTurns, storedChunks] = await Promise.all([
+          database.select({ id: turns.id, startedAt: turns.startedAt }).from(turns).where(eq(turns.roomId, roomId)),
+          database.select({
+            id: chunks.id,
+            startTurnId: chunks.startTurnId,
+            endTurnId: chunks.endTurnId,
+            encryptedSummary: chunks.encryptedSummary,
+          }).from(chunks).where(eq(chunks.roomId, roomId)),
+        ]);
+        orderedTurns.sort((left, right) => left.startedAt.getTime() - right.startedAt.getTime() || left.id.localeCompare(right.id));
+        const turnIndexes = new Map(orderedTurns.map((turn, index) => [turn.id, index]));
+        const changedIndexes = [...changedTurnIds].flatMap((turnId) => {
+          const index = turnIndexes.get(turnId);
+          return index === undefined ? [] : [index];
+        });
+        for (const chunk of storedChunks) {
+          const start = turnIndexes.get(chunk.startTurnId);
+          const end = turnIndexes.get(chunk.endTurnId);
+          if (start === undefined || end === undefined || !changedIndexes.some((index) => index >= start && index <= end)) continue;
+          const previous = decryptJson<Record<string, unknown> | string>(chunk.encryptedSummary);
+          await database.update(chunks).set({
+            encryptedSummary: encryptJson(typeof previous === "string"
+              ? { summary: previous, analysisComplete: false }
+              : { ...previous, analysisComplete: false }),
+            updatedAt: new Date(),
+          }).where(and(eq(chunks.roomId, roomId), eq(chunks.id, chunk.id)));
+        }
       }
     },
   };

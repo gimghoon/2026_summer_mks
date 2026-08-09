@@ -51,3 +51,18 @@ test("parses dot-delimited group exports and groups only consecutive speakers", 
     ["민수", 1], ["지훈", 1], ["민수", 3],
   ]);
 });
+
+test("gives identical same-minute messages occurrence fingerprints that remain stable on reparse", () => {
+  const raw = [
+    "민수와 카카오톡 대화",
+    "2026년 8월 7일 오전 9:01, 민수 : 응",
+    "2026년 8월 7일 오전 9:01, 민수 : 응",
+  ].join("\n");
+  const first = parseKakaoExport(raw);
+  const second = parseKakaoExport(raw);
+
+  expect(new Set(first.messages.map((message) => message.sourceFingerprint)).size).toBe(2);
+  expect(first.messages.map((message) => message.sourceFingerprint)).toEqual(
+    second.messages.map((message) => message.sourceFingerprint),
+  );
+});

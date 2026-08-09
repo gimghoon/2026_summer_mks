@@ -11,6 +11,8 @@ export type DecryptedTurn = {
 export type ContextQuery = {
   roomId: string;
   participantIds: string[];
+  /** Every listed participant must occur in a candidate (used for group-chat person isolation). */
+  requiredParticipantIds?: string[];
   queryEmbedding: number[];
   topics: string[];
   eventTypes: string[];

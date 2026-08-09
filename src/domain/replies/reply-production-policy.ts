@@ -88,17 +88,20 @@ export function submittedCurrentTurn(command: GenerateRepliesCommand): Decrypted
 export function createSubmittedContextJudge(
   command: GenerateRepliesCommand,
 ): (turns: DecryptedTurn[]) => Promise<ContextSufficiency> {
-  const submittedTokenCount = tokens([
-    command.pastedConversation,
-    command.situation,
-    command.intent,
-  ].join("\n")).length;
+  const submittedTokenCount = tokens(command.pastedConversation).length;
   const situationTokenCount = tokens(command.situation).length;
   const intentTokenCount = tokens(command.intent).length;
-  return async () => ({
-    sufficient: submittedTokenCount >= 8 && situationTokenCount >= 2 && intentTokenCount >= 1,
-    ambiguityReasons: submittedTokenCount >= 8 && situationTokenCount >= 2 && intentTokenCount >= 1
-      ? []
-      : ["low_information"],
-  });
+  return async (turns) => {
+    const selectedTokenCount = tokens(turns.flatMap((turn) => (
+      turn.messages.map((message) => message.text)
+    )).join("\n")).length;
+    const sufficient = submittedTokenCount >= 5
+      && selectedTokenCount >= 5
+      && situationTokenCount >= 2
+      && intentTokenCount >= 1;
+    return {
+      sufficient,
+      ambiguityReasons: sufficient ? [] : ["low_information"],
+    };
+  };
 }

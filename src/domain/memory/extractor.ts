@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { and, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { z } from "zod";
 
@@ -131,24 +131,29 @@ export function createDrizzleMemoryRepository(
       const storedChunks = await executor.select({
         id: chunks.id,
         roomId: chunks.roomId,
+        startTurnId: chunks.startTurnId,
+        endTurnId: chunks.endTurnId,
         startedAt: chunks.startedAt,
         endedAt: chunks.endedAt,
         encryptedSummary: chunks.encryptedSummary,
       }).from(chunks).where(eq(chunks.roomId, roomId));
+      const roomTurns = await executor.select({
+        id: turnRows.id,
+        participantId: turnRows.participantId,
+        startedAt: turnRows.startedAt,
+        encryptedMessageIds: turnRows.encryptedMessageIds,
+      }).from(turnRows).where(eq(turnRows.roomId, roomId));
+      roomTurns.sort((left, right) => left.startedAt.getTime() - right.startedAt.getTime() || left.id.localeCompare(right.id));
+      const turnIndexes = new Map(roomTurns.map((turn, index) => [turn.id, index]));
 
       const loaded = await Promise.all(storedChunks.map(async (storedChunk) => {
         const { encryptedSummary, ...chunk } = storedChunk;
-        const storedTurns = await executor.select({
-          id: turnRows.id,
-          participantId: turnRows.participantId,
-          startedAt: turnRows.startedAt,
-          encryptedMessageIds: turnRows.encryptedMessageIds,
-        }).from(turnRows).where(and(
-          eq(turnRows.roomId, roomId),
-          gte(turnRows.startedAt, chunk.startedAt),
-          lte(turnRows.endedAt, chunk.endedAt),
-        ));
-        storedTurns.sort((left, right) => left.startedAt.getTime() - right.startedAt.getTime());
+        const start = turnIndexes.get(chunk.startTurnId);
+        const end = turnIndexes.get(chunk.endTurnId);
+        if (start === undefined || end === undefined || start > end) {
+          throw new Error(`Chunk ${chunk.id} has invalid turn boundaries`);
+        }
+        const storedTurns = roomTurns.slice(start, end + 1);
         const messageIds = storedTurns.flatMap((turn) => decryptJson<string[]>(turn.encryptedMessageIds));
         const storedMessages = messageIds.length === 0
           ? []
@@ -164,7 +169,10 @@ export function createDrizzleMemoryRepository(
         const byMessageId = new Map(storedMessages.map((message) => [message.id, message]));
 
         const memoryChunk: MemoryChunk = {
-          ...chunk,
+          id: chunk.id,
+          roomId: chunk.roomId,
+          startedAt: chunk.startedAt,
+          endedAt: chunk.endedAt,
           turns: storedTurns.map((turn) => {
             const turnMessageIds = decryptJson<string[]>(turn.encryptedMessageIds);
             const messages = turnMessageIds.map((id) => byMessageId.get(id)).filter((message) => message !== undefined);

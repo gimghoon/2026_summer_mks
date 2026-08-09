@@ -31,8 +31,20 @@ const DIVIDER_LINE = /^[-=]{3,}\s*$/;
 const MEDIA_PLACEHOLDER = /^\[?(?:사진|동영상|파일|음성메시지|이모티콘|앨범|지도|연락처|선물)\]?$/;
 const DELETED_PLACEHOLDER = /^(?:삭제된 메시지입니다\.?|메시지가 삭제되었습니다\.?)$/;
 
-function sourceFingerprint(sentAt: Date, speaker: string, kind: MessageKind, text: string): string {
-  const normalized = [sentAt.toISOString(), speaker.trim(), kind, text.replace(/\r\n?/g, "\n")].join("\u001f");
+function sourceFingerprint(
+  sentAt: Date,
+  speaker: string,
+  kind: MessageKind,
+  text: string,
+  occurrenceOrdinal: number,
+): string {
+  const normalized = [
+    sentAt.toISOString(),
+    speaker.trim(),
+    kind,
+    text.replace(/\r\n?/g, "\n"),
+    occurrenceOrdinal,
+  ].join("\u001f");
   return createHash("sha256").update(normalized, "utf8").digest("hex");
 }
 
@@ -108,7 +120,7 @@ export function parseKakaoExport(input: string): ParsedKakaoExport {
         text,
         sourceLine,
         kind,
-        sourceFingerprint: sourceFingerprint(sentAt, speaker, kind, text),
+        sourceFingerprint: "",
       };
       messages.push(currentMessage);
       participants.add(speaker);
@@ -123,11 +135,24 @@ export function parseKakaoExport(input: string): ParsedKakaoExport {
 
     currentMessage.text = `${currentMessage.text}\n${line}`;
     currentMessage.kind = messageKind(currentMessage.text);
-    currentMessage.sourceFingerprint = sourceFingerprint(
-      currentMessage.sentAt,
-      currentMessage.speaker,
-      currentMessage.kind,
-      currentMessage.text,
+  }
+
+  const occurrences = new Map<string, number>();
+  for (const message of messages) {
+    const occurrenceKey = [
+      message.sentAt.toISOString(),
+      message.speaker.trim(),
+      message.kind,
+      message.text.replace(/\r\n?/g, "\n"),
+    ].join("\u001f");
+    const occurrenceOrdinal = occurrences.get(occurrenceKey) ?? 0;
+    occurrences.set(occurrenceKey, occurrenceOrdinal + 1);
+    message.sourceFingerprint = sourceFingerprint(
+      message.sentAt,
+      message.speaker,
+      message.kind,
+      message.text,
+      occurrenceOrdinal,
     );
   }
 

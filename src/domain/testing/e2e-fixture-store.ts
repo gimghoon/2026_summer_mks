@@ -100,8 +100,42 @@ function factView(fact: FixtureFact): ProfileFactView {
   };
 }
 
-export function importFixtureRoom(input: { title: string; selfName: string; rawText: string }) {
+export function importFixtureRoom(input: { title: string; selfName: string; rawText: string; existingRoomId?: string }) {
   const parsed = parseKakaoExport(input.rawText);
+  if (input.existingRoomId) {
+    const room = state().rooms.get(input.existingRoomId);
+    if (!room) throw new Error("Room not found");
+    const existingNames = new Set(room.participants.map((participant) => (
+      decryptJson<string>(participant.encryptedName)
+    )));
+    for (const name of new Set([...parsed.participants, input.selfName])) {
+      if (existingNames.has(name)) continue;
+      room.participants.push({
+        id: randomUUID(),
+        encryptedName: encryptJson(name),
+        isSelf: name === input.selfName,
+        relationshipStyle: name === input.selfName ? null : "female_friend",
+      });
+    }
+    const existingFingerprints = new Set(room.encryptedMessages.map((encrypted) => (
+      decryptJson<{ sourceFingerprint: string }>(encrypted).sourceFingerprint
+    )));
+    const inserted = parsed.messages.filter((message) => !existingFingerprints.has(message.sourceFingerprint));
+    room.encryptedMessages.push(...inserted.map((message) => encryptJson({
+      speaker: message.speaker,
+      kind: message.kind,
+      text: message.text,
+      sourceFingerprint: message.sourceFingerprint,
+    })));
+    if (inserted.length > 0) room.encryptedChunks = [];
+    room.updatedAt = new Date().toISOString();
+    return {
+      roomId: room.id,
+      insertedMessages: inserted.length,
+      duplicateMessages: parsed.messages.length - inserted.length,
+      unparsedLines: parsed.unparsedLines,
+    };
+  }
   const roomId = randomUUID();
   const names = [...new Set([...parsed.participants, input.selfName])];
   const room: FixtureRoom = {
@@ -118,6 +152,7 @@ export function importFixtureRoom(input: { title: string; selfName: string; rawT
       speaker: message.speaker,
       kind: message.kind,
       text: message.text,
+      sourceFingerprint: message.sourceFingerprint,
     })),
     encryptedChunks: [],
     encryptedMemory: null,

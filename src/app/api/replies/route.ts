@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 
 import { getDb } from "@/db/client";
 import {
@@ -19,10 +19,7 @@ import {
   type ReplyBody,
   type ReplyRouteDependencies,
 } from "@/domain/replies/reply-api-handler";
-import { selectCurrentContext } from "@/domain/replies/context-expander";
 import {
-  createSubmittedContextJudge,
-  submittedCurrentTurn,
   validatesReplyFact,
 } from "@/domain/replies/reply-production-policy";
 import { OpenAIModelGateway } from "@/domain/models/openai-gateway";
@@ -31,7 +28,10 @@ import {
   generateReplies,
   type GenerateRepliesCommand,
 } from "@/domain/replies/reply-service";
-import { VectorContextRepository } from "@/domain/retrieval/vector-context-repository";
+import {
+  buildProductionReplyContext,
+  type ProductionContextSnapshot,
+} from "@/domain/replies/production-context";
 import { safeLog } from "@/lib/logger";
 import { getRoomView } from "@/domain/rooms/room-read-service";
 import {
@@ -42,28 +42,52 @@ import {
 } from "@/domain/testing/e2e-fixture-store";
 
 type StoredRoomMemory = { version?: number; summary?: string } | string;
-type StoredChunkMemory = { summary?: string } | string;
+type StoredChunkMemory = {
+  summary?: string;
+  emotions?: string[];
+  relationshipSignals?: string[];
+} | string;
 
-async function currentRoomTurns(roomId: string) {
+async function productionContextSnapshot(
+  command: GenerateRepliesCommand,
+): Promise<ProductionContextSnapshot> {
   const database = getDb();
-  const storedTurns = await database.select({
-    id: turns.id,
-    participantId: turns.participantId,
-    startedAt: turns.startedAt,
-    encryptedMessageIds: turns.encryptedMessageIds,
-  }).from(turns).where(eq(turns.roomId, roomId)).orderBy(desc(turns.startedAt)).limit(80);
-
-  const chronologicalTurns = [...storedTurns].reverse();
-  const messageIds = chronologicalTurns.flatMap((turn) => decryptJson<string[]>(turn.encryptedMessageIds));
-  if (messageIds.length === 0) return [];
-  const storedMessages = await database.select({
+  const [storedTurns, storedChunks, memoryRows, roomParticipantRows, profileFacts] = await Promise.all([
+    database.select({
+      id: turns.id,
+      participantId: turns.participantId,
+      startedAt: turns.startedAt,
+      encryptedMessageIds: turns.encryptedMessageIds,
+    }).from(turns).where(eq(turns.roomId, command.roomId)).orderBy(asc(turns.startedAt), asc(turns.id)),
+    database.select({
+      id: chunks.id,
+      roomId: chunks.roomId,
+      startTurnId: chunks.startTurnId,
+      endTurnId: chunks.endTurnId,
+      startedAt: chunks.startedAt,
+      endedAt: chunks.endedAt,
+      embedding: chunks.embedding,
+      encryptedSummary: chunks.encryptedSummary,
+      encryptedTopicTags: chunks.encryptedTopicTags,
+      encryptedEventTypes: chunks.encryptedEventTypes,
+    }).from(chunks).where(eq(chunks.roomId, command.roomId)),
+    database.select({ encryptedSummary: roomMemories.encryptedSummary })
+      .from(roomMemories).where(eq(roomMemories.roomId, command.roomId)),
+    database.select({
+      id: participants.id,
+      encryptedName: participants.encryptedName,
+      isSelf: participants.isSelf,
+    }).from(participants).where(eq(participants.roomId, command.roomId)),
+    listProfileFacts(command.participantId),
+  ]);
+  const messageIds = storedTurns.flatMap((turn) => decryptJson<string[]>(turn.encryptedMessageIds));
+  const storedMessages = messageIds.length === 0 ? [] : await database.select({
     id: messages.id,
     kind: messages.kind,
     encryptedText: messages.encryptedText,
-  }).from(messages).where(and(eq(messages.roomId, roomId), inArray(messages.id, messageIds)));
+  }).from(messages).where(and(eq(messages.roomId, command.roomId), inArray(messages.id, messageIds)));
   const byId = new Map(storedMessages.map((message) => [message.id, message]));
-
-  return chronologicalTurns.map((turn) => ({
+  const decryptedTurns = storedTurns.map((turn) => ({
     id: turn.id,
     speakerId: turn.participantId,
     startedAt: turn.startedAt,
@@ -72,77 +96,40 @@ async function currentRoomTurns(roomId: string) {
       return message ? [{ kind: message.kind as "text" | "media_event" | "deleted_event", text: decryptJson<string>(message.encryptedText) }] : [];
     }),
   })).filter((turn) => turn.messages.length > 0);
-}
-
-async function replyContext(
-  command: GenerateRepliesCommand,
-  relationship: RelationshipStyle,
-  gateway: OpenAIModelGateway,
-) {
-  const database = getDb();
-  const [allTurns, memoryRows, profileFacts] = await Promise.all([
-    currentRoomTurns(command.roomId),
-    database.select({ encryptedSummary: roomMemories.encryptedSummary })
-      .from(roomMemories).where(eq(roomMemories.roomId, command.roomId)),
-    listProfileFacts(command.participantId),
-  ]);
-  const submittedTurn = submittedCurrentTurn(command);
-  const currentContext = await selectCurrentContext({
-    // The current pasted exchange is always the newest context. Saved turns
-    // provide expansion support, but cannot make a sparse new request appear
-    // sufficient on their own.
-    turns: [...allTurns, submittedTurn],
-    fullChunkStart: 0,
-    judge: createSubmittedContextJudge(command),
-  });
+  const turnIndexes = new Map(decryptedTurns.map((turn, index) => [turn.id, index]));
   const roomMemory = memoryRows[0]
     ? (() => {
       const decoded = decryptJson<StoredRoomMemory>(memoryRows[0]!.encryptedSummary);
       return typeof decoded === "string" ? decoded : decoded.summary ?? null;
     })()
     : null;
-
-  const [embedding] = await gateway.embed([
-    `${command.pastedConversation}\n${command.situation}\n${command.intent}`,
-  ]);
-  const storedChunks = await database.select({
-    id: chunks.id,
-    roomId: chunks.roomId,
-    startedAt: chunks.startedAt,
-    embedding: chunks.embedding,
-    encryptedSummary: chunks.encryptedSummary,
-  }).from(chunks).where(eq(chunks.roomId, command.roomId));
-  const contextRepository = new VectorContextRepository({
-    listRankableChunks: async () => storedChunks.map((chunk) => ({
-      chunkId: chunk.id,
-      roomId: chunk.roomId,
-      startedAt: chunk.startedAt,
-      embedding: chunk.embedding,
-      participantIds: [],
-      topicTags: [],
-      eventTypes: [],
-      nicknames: [],
-      sensitiveTopics: [],
-      decrypt: async () => {
-        const decoded = decryptJson<StoredChunkMemory>(chunk.encryptedSummary);
-        return { summary: typeof decoded === "string" ? decoded : decoded.summary ?? "", turns: [] };
-      },
-    })),
-  });
-  const retrievedChunks = await contextRepository.findRelevant({
-    roomId: command.roomId,
-    participantIds: [command.participantId],
-    queryEmbedding: embedding ?? [],
-    topics: [],
-    eventTypes: [],
-    nicknames: [],
-    limit: 5,
-  });
-
   return {
-    relationship,
-    currentContext,
-    retrievedChunks,
+    roomParticipants: roomParticipantRows.map((participant) => ({
+      id: participant.id,
+      name: decryptJson<string>(participant.encryptedName),
+      isSelf: participant.isSelf,
+    })),
+    chunks: storedChunks.map((chunk) => {
+      const start = turnIndexes.get(chunk.startTurnId);
+      const end = turnIndexes.get(chunk.endTurnId);
+      if (start === undefined || end === undefined || start > end) {
+        throw new Error(`Chunk ${chunk.id} has invalid turn boundaries`);
+      }
+      const decoded = decryptJson<StoredChunkMemory>(chunk.encryptedSummary);
+      return {
+        chunkId: chunk.id,
+        roomId: chunk.roomId,
+        startedAt: chunk.startedAt,
+        endedAt: chunk.endedAt,
+        embedding: chunk.embedding,
+        summary: typeof decoded === "string" ? decoded : decoded.summary ?? "",
+        emotions: typeof decoded === "string" ? [] : decoded.emotions ?? [],
+        relationshipSignals: typeof decoded === "string" ? [] : decoded.relationshipSignals ?? [],
+        topicTags: decryptJson<string[]>(chunk.encryptedTopicTags),
+        eventTypes: decryptJson<string[]>(chunk.encryptedEventTypes),
+        turns: decryptedTurns.slice(start, end + 1),
+      };
+    }),
     roomMemory,
     participantProfiles: profileFacts.map((fact) => ({
       kind: fact.kind,
@@ -150,8 +137,20 @@ async function replyContext(
       conditions: fact.conditions,
       exceptions: fact.exceptions,
     })),
-    currentFacts: profileFacts.map((fact) => fact.value),
   };
+}
+
+async function replyContext(
+  command: GenerateRepliesCommand,
+  relationship: RelationshipStyle,
+  gateway: OpenAIModelGateway,
+) {
+  return buildProductionReplyContext(
+    command,
+    relationship,
+    gateway,
+    await productionContextSnapshot(command),
+  );
 }
 
 function productionDependencies(): ReplyRouteDependencies {
