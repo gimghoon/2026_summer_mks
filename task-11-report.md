@@ -22,7 +22,7 @@
 ## Verification evidence
 
 - Focused hardening: 5 files, 25 tests passed.
-- Full unit suite: 18 files, 83 tests passed.
+- Full unit suite: 19 files, 85 tests passed.
 - Full integration suite: 9 files, 70 tests passed.
 - TypeScript: `tsc --noEmit` passed.
 - Production build: Next.js compiled, typechecked, generated 12 static pages, and completed successfully.
@@ -42,3 +42,10 @@ The first Playwright execution could not start the local Next server because the
 - PostgreSQL foreign-key cascades are represented in the migration/schema and exercised through controlled adapter counts, but a real PostgreSQL deletion smoke test still requires a provisioned staging database.
 - A live model smoke test remains a deployment check and must use synthetic conversations, not private user data.
 - The user-approved implement-then-verify ruling was followed instead of strict red-first TDD.
+
+## Fix round 1
+
+- Corrected the Nginx example so every proxied location includes a shared header snippet setting `Host`, `X-Forwarded-Host`, `X-Forwarded-Proto`, and `X-Forwarded-For`; added a regression assertion over the runbook.
+- Added a separate, safety-gated PostgreSQL deletion E2E mode. `E2E_DATABASE_URL` must identify a PostgreSQL database whose name contains a standalone `test` marker. This mode disables fixture storage, migrates the dedicated database, seeds encrypted rows across every room-derived table, invokes the production delete route from the UI, checks actual foreign-key cascades and direct 404 behavior, and proves an unrelated room remains.
+- Added the exact `pnpm test:e2e:postgres` deployment command. This environment has no provisioned PostgreSQL test database, so the PostgreSQL-backed spec is discovered and typechecked but is not reported as executed.
+- Fix-round verification: Nginx/safety focused tests passed (3/3), the full unit suite passed (85/85), the full integration suite passed (70/70), TypeScript passed, the production build passed, offline Playwright discovery listed exactly two fixture specs, and PostgreSQL-mode discovery listed exactly one production deletion spec.

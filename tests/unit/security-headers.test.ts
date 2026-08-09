@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import nextConfig from "../../next.config";
 
 test("applies private-app browser security headers", async () => {
@@ -10,4 +13,18 @@ test("applies private-app browser security headers", async () => {
   expect(headers["X-Frame-Options"]).toBe("DENY");
   expect(headers["Referrer-Policy"]).toBe("no-referrer");
   expect(headers["Permissions-Policy"]).toContain("camera=()");
+});
+
+test("documents forwarded request headers for every Nginx proxy location", () => {
+  const runbook = readFileSync(join(process.cwd(), "docs/operations/private-deployment.md"), "utf8");
+  expect(runbook).toContain("proxy_set_header Host $host;");
+  expect(runbook).toContain("proxy_set_header X-Forwarded-Host $host;");
+  expect(runbook).toContain("proxy_set_header X-Forwarded-Proto $scheme;");
+  expect(runbook).toContain("proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;");
+
+  const locations = runbook.match(/location (?:= \/api\/session|\/api\/|\/) \{[\s\S]*?\n  \}/gu) ?? [];
+  expect(locations).toHaveLength(3);
+  expect(locations.every((location) => (
+    location.includes("include /etc/nginx/snippets/private-reply-proxy.conf;")
+  ))).toBe(true);
 });

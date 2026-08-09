@@ -63,6 +63,12 @@ Never expose the Next.js process directly. Terminate HTTPS at a maintained rever
 limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
 limit_req_zone $binary_remote_addr zone=private_api:10m rate=30r/m;
 
+# /etc/nginx/snippets/private-reply-proxy.conf
+proxy_set_header Host $host;
+proxy_set_header X-Forwarded-Host $host;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
 server {
   listen 443 ssl http2;
   server_name private-reply.example.com;
@@ -71,16 +77,19 @@ server {
 
   location = /api/session {
     limit_req zone=login burst=5 nodelay;
+    include /etc/nginx/snippets/private-reply-proxy.conf;
     proxy_pass http://127.0.0.1:3000;
   }
 
   location /api/ {
     limit_req zone=private_api burst=20 nodelay;
     client_max_body_size 51m;
+    include /etc/nginx/snippets/private-reply-proxy.conf;
     proxy_pass http://127.0.0.1:3000;
   }
 
   location / {
+    include /etc/nginx/snippets/private-reply-proxy.conf;
     proxy_pass http://127.0.0.1:3000;
   }
 }
@@ -127,7 +136,19 @@ WHERE r.room_id = :'room_id';
 
 Every count must be zero. Profile facts and revisions cascade through deleted participants; verify them before deletion by recording the participant IDs if an explicit audit is required. Also verify the room URL returns 404 and inspect structured application logs for only scalar operational identifiers—never names, message text, profile text, prompts, or model output.
 
-## 7. Routine verification
+## 7. PostgreSQL deletion E2E
+
+The default browser suite uses a production-disabled encrypted memory adapter for offline UX coverage. Run the separate PostgreSQL deletion test against a dedicated disposable database to verify the production route and real foreign-key cascades:
+
+```sh
+sudo -u postgres createdb --owner private_reply_app private_reply_e2e_test
+export E2E_DATABASE_URL='postgresql://private_reply_app:change-me@127.0.0.1:5432/private_reply_e2e_test'
+pnpm test:e2e:postgres
+```
+
+The runner refuses non-PostgreSQL URLs and database names without a standalone `test` marker, runs the migrations against `E2E_DATABASE_URL`, disables `E2E_FIXTURE_MODE`, and selects only `postgres-data-deletion.spec.ts`. The spec inserts encrypted rows under fresh UUIDs, deletes one room through the real browser/API path, verifies every cascade count, proves an unrelated seeded room remains, and removes its own rows in cleanup. Use a dedicated test database anyway: the name guard is a last-resort safety check, not permission to point E2E at staging or production.
+
+## 8. Routine verification
 
 Run before deployment and after dependency/model changes:
 
@@ -135,6 +156,7 @@ Run before deployment and after dependency/model changes:
 pnpm test
 pnpm test:integration
 pnpm test:e2e
+pnpm test:e2e:postgres
 pnpm exec tsc --noEmit
 pnpm build
 ```
