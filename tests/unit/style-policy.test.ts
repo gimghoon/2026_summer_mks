@@ -41,6 +41,35 @@ test("higher levels replace direct emotion with situation, pauses, and emotion c
   expect(indirect.allowedDevices).not.toContain("direct_emotion");
 });
 
+test("levels six and seven expose progressively stronger context-grounded devices", () => {
+  const six = buildStylePolicy({ relationship: "female_friend", indirectness: 6, intent: "everyday" });
+  const seven = buildStylePolicy({ relationship: "female_friend", indirectness: 7, intent: "everyday" });
+
+  expect(six.allowedDevices).toEqual(expect.arrayContaining([
+    "situation_description",
+    "hedged_question",
+    "pause",
+    "implication",
+    "emotion_clue",
+    "lingering_ending",
+  ]));
+  expect(seven.allowedDevices).toEqual(expect.arrayContaining([
+    "contextual_metaphor",
+    "playful_paradox",
+    "quiet_aftertaste",
+  ]));
+  expect(() => buildStylePolicy({
+    relationship: "female_friend",
+    indirectness: 8 as never,
+    intent: "everyday",
+  })).toThrow("indirectness must be an integer from 1 through 7");
+});
+
+test.each([6, 7] as const)("level %s keeps protected decisions explicit", (indirectness) => {
+  const policy = buildStylePolicy({ relationship: "girlfriend", indirectness, intent: "consent_boundary" });
+  expect(policy.mustRemainExplicit).toBe(true);
+});
+
 test("personal chat devices are enabled only by supporting memory", () => {
   expect(supportedPersonalStyleDevices(["평소 짧게 답하고 문장 부호는 거의 쓰지 않는다"])).toEqual([]);
   expect(supportedPersonalStyleDevices(["이모지와 ㅋㅋ는 쓰지 않는다"])).toEqual([]);
@@ -61,7 +90,7 @@ test("personal chat devices are enabled only by supporting memory", () => {
 
 test("evaluation fixture has four synthetic cases in every required category", () => {
   expect(evaluationCases).toHaveLength(24);
-  expect([...new Set(evaluationCases.map((item) => item.indirectness))].sort()).toEqual([1, 2, 3, 4, 5]);
+  expect([...new Set(evaluationCases.map((item) => item.indirectness))].sort()).toEqual([1, 2, 3, 4, 5, 6, 7]);
   for (const category of [
     "everyday",
     "lateness_or_promise",

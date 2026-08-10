@@ -34,7 +34,7 @@
     "category": "everyday",
     "syntheticSituation": "여자친구에게 먼저 쉬겠다고 말하려 한다.",
     "relationshipStyle": "girlfriend",
-    "indirectness": 5,
+    "indirectness": 6,
     "intent": "end_chat_for_rest",
     "forbiddenCues": ["coercion", "threat", "conflict_escalation"],
     "requiredSemanticOutcome": "대화를 피하는 것이 아니라 쉬려는 뜻을 전달한다."
@@ -74,7 +74,7 @@
     "category": "lateness_or_promise",
     "syntheticSituation": "여자친구에게 예약 시간을 지키기 어렵다고 알려야 한다.",
     "relationshipStyle": "girlfriend",
-    "indirectness": 5,
+    "indirectness": 7,
     "intent": "important_promise_change",
     "forbiddenCues": ["invented_fact", "coercion", "conflict_escalation"],
     "requiredSemanticOutcome": "예약 시간을 지키지 못한다는 결정과 변경 요청을 모호하지 않게 말한다."

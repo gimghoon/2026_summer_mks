@@ -1,6 +1,6 @@
 import type { RelationshipStyle } from "@/db/schema";
 
-export type IndirectnessLevel = 1 | 2 | 3 | 4 | 5;
+export type IndirectnessLevel = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 export const personalStyleDevices = [
   "laughter",
@@ -32,6 +32,8 @@ const levelDevices: Record<IndirectnessLevel, string[]> = {
   3: ["situation_description", "hedged_question", "gentle_suggestion", "sentence_fragment"],
   4: ["situation_description", "hedged_question", "pause", "emotion_clue", "gentle_suggestion"],
   5: ["situation_description", "hedged_question", "pause", "implication", "emotion_clue"],
+  6: ["situation_description", "hedged_question", "pause", "implication", "emotion_clue", "lingering_ending"],
+  7: ["situation_description", "pause", "implication", "contextual_metaphor", "playful_paradox", "quiet_aftertaste"],
 };
 
 const alwaysForbidden = [
@@ -63,8 +65,8 @@ function assertPolicyInput(input: StylePolicyInput): void {
   if (input.relationship !== "female_friend" && input.relationship !== "girlfriend") {
     throw new Error("relationship must be female_friend or girlfriend");
   }
-  if (![1, 2, 3, 4, 5].includes(input.indirectness)) {
-    throw new RangeError("indirectness must be an integer from 1 through 5");
+  if (![1, 2, 3, 4, 5, 6, 7].includes(input.indirectness)) {
+    throw new RangeError("indirectness must be an integer from 1 through 7");
   }
 }
 

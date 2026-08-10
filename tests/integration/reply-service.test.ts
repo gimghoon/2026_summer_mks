@@ -105,6 +105,24 @@ test("returns exactly three candidates in the required strategy order", async ()
   expect(gateway.requests[0]!.system).toContain("only if its key is listed in Policy.allowedDevices");
 });
 
+test("level seven requests three context-grounded creative circumlocution strategies", async () => {
+  const gateway = new FakeGateway([candidates([
+    "오늘도 시계는 나만 보고 있었나 봐",
+    "기다리는 쪽은 시간이 더 천천히 가나 보네",
+    "다음 시계는 같이 보면 좋겠다",
+  ])]);
+
+  await generateReplies({ ...command, indirectness: 7 }, dependencies(gateway));
+
+  const system = gateway.requests[0]!.system;
+  expect(system).toContain("level 7");
+  expect(system).toContain("contextual metaphor");
+  expect(system).toContain("playful implication");
+  expect(system).toContain("quiet aftertaste");
+  expect(system).toContain("supplied conversation");
+  expect(system).toContain("keep the actual decision unambiguous at every indirectness level");
+});
+
 test("uses an OpenAI-compatible homogeneous array schema for three candidates", async () => {
   const gateway = new FakeGateway([candidates([
     "바빴구나, 다음엔 말해줘",

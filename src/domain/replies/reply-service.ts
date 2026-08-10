@@ -293,6 +293,16 @@ function modelContext(context: ReplyGenerationContext) {
   };
 }
 
+function creativeIndirectnessGuidance(level: IndirectnessLevel): string {
+  if (level === 6) {
+    return "At level 6, avoid directly naming the emotion or request when the intent is not protected; imply it through the supplied situation, a hedged question, a pause, or a lingering ending.";
+  }
+  if (level === 7) {
+    return "At level 7, stay natural and concise. Use only material from the supplied conversation. Give candidate one a contextual metaphor, candidate two a playful implication or paradox, and candidate three a quiet aftertaste. Never add unrelated poetry or invented facts.";
+  }
+  return "";
+}
+
 function generationSystem(policy: StylePolicy): string {
   return [
     "Generate exactly three concise Korean KakaoTalk reply candidates.",
@@ -302,7 +312,8 @@ function generationSystem(policy: StylePolicy): string {
     "Use only supplied facts. Do not invent events, people, dates, promises, feelings, or relationship history.",
     "Preserve the user's agency: never coerce, threaten, harass, shame, manipulate, or intensify conflict.",
     "Do not include romantic, jealousy, or possessive cues when the relationship is female_friend.",
-    "For money, consent, safety, firm rejection, and important promises, keep the actual decision unambiguous even at indirectness level five.",
+    "For money, consent, safety, firm rejection, and important promises, keep the actual decision unambiguous at every indirectness level.",
+    creativeIndirectnessGuidance(policy.indirectness),
     "Personal device mapping: laughter=ㅋㅋ/ㅎㅎ, vowel_repetition=repeated Korean vowels, tilde=~, emoji=emoji. Use a personal device only if its key is listed in Policy.allowedDevices.",
     `Policy: ${JSON.stringify(policy)}`,
     "On a retry, validationRuleIds are opaque rule identifiers. Correct those rules without quoting or discussing the previous text.",
