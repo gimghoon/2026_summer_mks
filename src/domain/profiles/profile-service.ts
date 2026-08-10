@@ -310,6 +310,18 @@ export function createDrizzleProfileRepository(
   };
 }
 
+/** Adapter for a caller-owned transaction; profile replacement joins it. */
+export function createTransactionBoundDrizzleProfileRepository(
+  database: NodePgDatabase<typeof import("@/db/schema")>,
+): ProfileRepository {
+  const operations = createDrizzleOperations(database as unknown as DrizzleExecutor);
+  const repository: ProfileRepository = {
+    ...operations,
+    transaction: (work) => work(repository),
+  };
+  return repository;
+}
+
 const correctionSchema = z.object({
   factKind: z.enum(profileFactKinds),
   existingFactId: z.string().nullable(),
