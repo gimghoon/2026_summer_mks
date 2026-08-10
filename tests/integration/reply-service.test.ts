@@ -319,6 +319,47 @@ test("level five does not confuse a non-financial send with an explicit money de
   });
 });
 
+test("level five does not confuse a non-financial send request with a money request", async () => {
+  const nonFinancialRequest = candidates([
+    "사진 좀 보내줘",
+    "메시지 보내줘",
+    "파일 보내줘",
+  ]);
+  const gateway = new FakeGateway([nonFinancialRequest, nonFinancialRequest]);
+
+  await expect(generateReplies(
+    { ...command, intent: "돈 좀 보내줘", indirectness: 5 },
+    dependencies(gateway),
+  )).rejects.toMatchObject({
+    ruleIds: ["EXPLICIT_INTENT_AMBIGUOUS"],
+  });
+  expect(gateway.requests).toHaveLength(2);
+});
+
+test("level seven warns without retrying for non-financial send requests", async () => {
+  const nonFinancialRequest = candidates([
+    "사진 좀 보내줘",
+    "메시지 보내줘",
+    "파일 보내줘",
+  ]);
+  const gateway = new FakeGateway([nonFinancialRequest]);
+
+  const result = await generateReplies(
+    { ...command, intent: "돈 좀 보내줘", indirectness: 7 },
+    dependencies(gateway),
+  );
+
+  expect(result.kind).toBe("replies");
+  if (result.kind !== "replies") return;
+  expect(gateway.requests).toHaveLength(1);
+  for (const candidate of result.candidates) {
+    expect(candidate.warnings).toEqual([
+      "emotional_inference",
+      "important_intent_ambiguity",
+    ]);
+  }
+});
+
 test("uses an OpenAI-compatible homogeneous array schema for three candidates", async () => {
   const gateway = new FakeGateway([candidates([
     "바빴구나, 다음엔 말해줘",
