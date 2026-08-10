@@ -1016,8 +1016,12 @@ test("changed chunk fingerprint removes the prior locked-fact proposal", async (
 
   chunk.turns[0]!.messages[0]!.text = "민수는 오늘 장난을 하지 않았다고 정정했다";
   memoryRepository.markChunkChanged(chunk.id);
-  await extractRoomMemory(chunk.roomId, dependencies);
+  const changedProgress: number[] = [];
+  await extractRoomMemory(chunk.roomId, dependencies, async (completed) => {
+    changedProgress.push(completed);
+  });
 
+  expect(changedProgress).toEqual([1]);
   expect(profileRepository.revisions.filter((revision) => revision.source === "ai_change_proposal"))
     .toHaveLength(0);
   expect((await profileService.listProfileFacts("participant-1"))).toContainEqual(expect.objectContaining({

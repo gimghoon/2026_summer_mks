@@ -64,6 +64,7 @@ test("shows persisted finalization and failure states after reload", async () =>
   vi.stubGlobal("fetch", fetchMock);
   const { rerender } = render(<RoomAnalysisActions room={room} />);
   expect(await screen.findByText("대화방 맥락을 종합하는 중이에요")).toBeVisible();
+  expect(screen.getByRole("button", { name: "분석 중…" })).toBeDisabled();
 
   fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({
     roomId: room.id,

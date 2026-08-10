@@ -70,6 +70,8 @@ export function RoomAnalysisActions({ room, pollIntervalMs = 1_000 }: Props) {
   const percentage = progress && progress.totalChunks > 0
     ? Math.floor((progress.completedChunks / progress.totalChunks) * 100)
     : 0;
+  const serverBusy = progress?.status === "analyzing" || progress?.status === "finalizing";
+  const analysisBusy = busy || serverBusy;
   return (
     <section className="upload-panel">
       <p className="eyebrow">{progress?.status === "failed" ? "분석 중단" : "대화 분석"}</p>
@@ -87,8 +89,8 @@ export function RoomAnalysisActions({ room, pollIntervalMs = 1_000 }: Props) {
         </div>
       )}
       <p className="muted">중단되어도 완료한 청크 다음부터 다시 이어가요.</p>
-      <button className="primary-button" type="button" disabled={busy} onClick={retry}>
-        {busy ? "분석 중…" : "분석 다시 시도"}
+      <button className="primary-button" type="button" disabled={analysisBusy} onClick={retry}>
+        {analysisBusy ? "분석 중…" : "분석 다시 시도"}
       </button>
       {error && <p className="form-error" role="alert">{error}</p>}
     </section>

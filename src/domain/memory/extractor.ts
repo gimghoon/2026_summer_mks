@@ -502,8 +502,10 @@ export async function prepareRoomChunks(
   const existingProfileFacts = (await Promise.all(roomParticipants.map((participant) => (
     profileService.listProfileFacts(participant.id, excludedKeys)
   )))).flat();
+  const pendingChunkIds = new Set(pendingChunks.map((chunk) => chunk.id));
   const completedBefore = existingMemories.filter((memory) => (
-    memory.analysisPrepared === true || memory.analysisComplete === true
+    !pendingChunkIds.has(memory.chunkId)
+    && (memory.analysisPrepared === true || memory.analysisComplete === true)
   )).length;
 
   const updatedChunkIds: string[] = [];

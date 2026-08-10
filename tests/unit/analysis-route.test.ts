@@ -3,6 +3,7 @@
 const sessionFailureMock = vi.hoisted(() => vi.fn());
 const getRoomViewMock = vi.hoisted(() => vi.fn());
 const getProgressMock = vi.hoisted(() => vi.fn());
+const getDbMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/domain/auth/session", () => ({ apiSessionFailure: sessionFailureMock }));
 vi.mock("@/domain/rooms/room-read-service", () => ({ getRoomView: getRoomViewMock }));
@@ -14,7 +15,7 @@ vi.mock("@/domain/testing/e2e-fixture-store", () => ({
   fixtureModeEnabled: () => false,
   analyzeFixtureRoom: vi.fn(),
 }));
-vi.mock("@/db/client", () => ({ getDb: vi.fn() }));
+vi.mock("@/db/client", () => ({ getDb: getDbMock }));
 
 import { GET } from "@/app/api/rooms/[roomId]/analysis/route";
 
@@ -24,6 +25,32 @@ beforeEach(() => {
   sessionFailureMock.mockReset();
   getRoomViewMock.mockReset();
   getProgressMock.mockReset();
+  getDbMock.mockReset();
+});
+
+test("does not expose a stale ready run after new turns require analysis", async () => {
+  sessionFailureMock.mockResolvedValue(null);
+  getRoomViewMock.mockResolvedValue({ id: "room", analysisStatus: "needs_analysis" });
+  getProgressMock.mockResolvedValue({
+    roomId: "11111111-1111-4111-8111-111111111111",
+    status: "ready",
+    stage: "complete",
+    completedChunks: 49,
+    totalChunks: 49,
+    failure: "none",
+  });
+  getDbMock.mockReturnValue({
+    select: () => ({ from: () => ({ where: async () => [{ total: 50 }] }) }),
+  });
+
+  const response = await GET(new Request("https://assistant.test/api/rooms/id/analysis"), context);
+
+  await expect(response.json()).resolves.toMatchObject({
+    status: "pending",
+    stage: "chunks",
+    completedChunks: 0,
+    totalChunks: 50,
+  });
 });
 
 test("authenticates before looking up analysis progress", async () => {

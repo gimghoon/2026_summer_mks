@@ -32,9 +32,21 @@ export async function GET(request: Request, context: Context): Promise<Response>
     });
   }
   const stored = await getRoomAnalysisProgress(roomId);
-  if (stored) return Response.json(stored);
+  if (stored && !(stored.status === "ready" && room.analysisStatus === "needs_analysis")) {
+    return Response.json(stored);
+  }
   const rows = await getDb().select({ total: count() }).from(chunks).where(eq(chunks.roomId, roomId));
   const totalChunks = rows[0]?.total ?? 0;
+  if (stored?.status === "ready") {
+    return Response.json({
+      roomId,
+      status: "pending",
+      stage: "chunks",
+      completedChunks: 0,
+      totalChunks,
+      failure: "none",
+    });
+  }
   return Response.json({
     roomId,
     status: room.analysisStatus === "ready" ? "ready" : "pending",
