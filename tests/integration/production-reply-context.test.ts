@@ -118,3 +118,39 @@ test("production wiring selects 20 turns, minimizes provider plaintext, and enfo
   expect(gateway.requests[0]!.input).not.toContain("OLDEST_PRIVATE_SENTINEL");
   expect(gateway.requests[0]!.input).toContain("곰돌이 영화 약속은 다음에 미리 알려줘");
 });
+
+test("uses an explicit room participant name to resolve a recent person reference", async () => {
+  const explicitCommand: GenerateRepliesCommand = {
+    ...command,
+    pastedConversation: "민수: 걔는 아직 돈 안 보냈어\n나: 이따 예약해야 해",
+    situation: "걔는 서연을 뜻하고, 서연만 아직 돈을 안 보낸 상태다",
+    intent: "서연에게 예약 전에 돈을 보내 달라고 말한다",
+  };
+
+  const context = await buildProductionReplyContext(
+    explicitCommand,
+    "female_friend",
+    new RecordingGateway(),
+    snapshot,
+  );
+
+  expect(context.currentContext.needsUserQuestion).toBe(false);
+});
+
+test("does not resolve a recent person reference with a name outside the room", async () => {
+  const unknownNameCommand: GenerateRepliesCommand = {
+    ...command,
+    pastedConversation: "민수: 걔는 아직 돈 안 보냈어\n나: 이따 예약해야 해",
+    situation: "걔는 영희를 뜻하고, 영희만 아직 돈을 안 보낸 상태다",
+    intent: "영희에게 예약 전에 돈을 보내 달라고 말한다",
+  };
+
+  const context = await buildProductionReplyContext(
+    unknownNameCommand,
+    "female_friend",
+    new RecordingGateway(),
+    snapshot,
+  );
+
+  expect(context.currentContext.needsUserQuestion).toBe(true);
+});

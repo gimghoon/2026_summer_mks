@@ -40,6 +40,17 @@ function normalizedName(name: string): string {
   return name.normalize("NFKC").trim().toLocaleLowerCase();
 }
 
+function hasExplicitParticipantReference(
+  command: Pick<GenerateRepliesCommand, "situation" | "intent">,
+  participants: ProductionRoomParticipant[],
+): boolean {
+  const framing = normalizedName(`${command.situation}\n${command.intent}`);
+  return participants.some((participant) => {
+    const name = normalizedName(participant.name);
+    return name.length >= 2 && framing.includes(name);
+  });
+}
+
 function submittedSpeakerId(
   label: string,
   participants: ProductionRoomParticipant[],
@@ -155,6 +166,7 @@ export async function buildProductionReplyContext(
     turns: combinedTurns,
     fullChunkStart: 0,
     judge: createSubmittedContextJudge(command),
+    resolvedPersonReference: hasExplicitParticipantReference(command, snapshot.roomParticipants),
   });
   const selectedPlaintext = selectedContextPlaintext(currentContext.turns);
   const embeddingInput = [selectedPlaintext, command.situation, command.intent].filter(Boolean).join("\n");
