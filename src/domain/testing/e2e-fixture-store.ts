@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { ProfileFactView } from "@/domain/profiles/profile-service";
 import type { ReplyCandidate } from "@/domain/replies/reply-service";
 import { NO_PERSONAL_CONTEXT_BASIS } from "@/domain/replies/reply-evidence";
+import type { IndirectnessLevel } from "@/domain/replies/style-policy";
 import type { RoomView } from "@/domain/rooms/room-read-types";
 import { decryptJson, encryptJson } from "@/domain/crypto/encrypted-json";
 import { parseKakaoExport } from "@/domain/kakao/parser";
@@ -293,11 +294,18 @@ export function confirmFixtureCorrection(participantId: string, proposalId: stri
   });
 }
 
-const fixtureCandidates: [ReplyCandidate, ReplyCandidate, ReplyCandidate] = [
+type FixtureReplyCandidates = [ReplyCandidate, ReplyCandidate, ReplyCandidate];
+
+const fixtureCandidates: FixtureReplyCandidates = [
   { strategy: "relationship_soft", text: "다음에는 늦을 것 같으면 살짝만 알려줘 ㅎㅎ", intentLabel: "관계를 부드럽게 유지", riskLabel: null, contextBasis: ["말투: 짧고 부드럽게 답함"], warnings: [] },
-  { strategy: "emotion_signal", text: "기다리면서 조금 아쉽긴 했어~", intentLabel: "서운함을 은근히 전달", riskLabel: "의도가 약하게 들릴 수 있어요", contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: ["emotional_inference"] },
-  { strategy: "clearer_request", text: "다음부터 늦을 때는 미리 한마디 부탁해", intentLabel: "기대 행동을 분명히 전달", riskLabel: null, contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: ["important_intent_ambiguity"] },
+  { strategy: "emotion_signal", text: "기다리면서 조금 아쉽긴 했어~", intentLabel: "서운함을 은근히 전달", riskLabel: "의도가 약하게 들릴 수 있어요", contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: [] },
+  { strategy: "clearer_request", text: "다음부터 늦을 때는 미리 한마디 부탁해", intentLabel: "기대 행동을 분명히 전달", riskLabel: null, contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: [] },
 ];
+
+function fixtureCandidatesFor(indirectness: IndirectnessLevel): FixtureReplyCandidates {
+  const warnings = indirectness >= 6 ? ["emotional_inference"] : [];
+  return fixtureCandidates.map((candidate) => ({ ...candidate, warnings: [...warnings] })) as FixtureReplyCandidates;
+}
 
 export function generateFixtureReplies(input: {
   roomId: string;
@@ -305,7 +313,8 @@ export function generateFixtureReplies(input: {
   pastedConversation: string;
   situation: string;
   intent: string;
-}): { kind: "clarification_required"; question: string } | { kind: "replies"; candidates: typeof fixtureCandidates } {
+  indirectness: IndirectnessLevel;
+}): { kind: "clarification_required"; question: string } | { kind: "replies"; candidates: FixtureReplyCandidates } {
   if (input.situation.includes("맥락이 부족해") && !input.situation.includes("추가 설명:")) {
     return { kind: "clarification_required", question: "어떤 약속 때문에 서운한지 한 가지만 알려줄래요?" };
   }
@@ -313,15 +322,16 @@ export function generateFixtureReplies(input: {
   if (!room || !fixtureParticipantBelongsToRoom(input.roomId, input.participantId)) {
     throw new Error("Fixture room participant not found");
   }
+  const candidates = fixtureCandidatesFor(input.indirectness);
   room.replyRequests.push({
     roomId: input.roomId,
     participantId: input.participantId,
     encryptedPastedConversation: encryptJson(input.pastedConversation),
     encryptedSituation: encryptJson(input.situation),
     encryptedIntent: encryptJson(input.intent),
-    encryptedCandidates: fixtureCandidates.map((candidate) => encryptJson(candidate)),
+    encryptedCandidates: candidates.map((candidate) => encryptJson(candidate)),
   });
-  return { kind: "replies", candidates: fixtureCandidates };
+  return { kind: "replies", candidates };
 }
 
 export function deleteFixtureRoom(roomId: string): boolean {
