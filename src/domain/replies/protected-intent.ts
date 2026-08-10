@@ -1,7 +1,7 @@
 export type ProtectedIntentKind = "money" | "consent" | "safety" | "refusal" | "promise";
 
 const moneyNoun = /money|payment|loan|debt|repay|돈|금전|금액|송금|입금|비용|회비|대출|빚|빌려|계좌|결제|환불/iu;
-const moneyDecisionCue = /request|ask|refusal|reject|decline|deny|acceptance|accept|approve|agree|allocation|split|요청|부탁|보내\s*달|입금해\s*줘|거절|거부|안\s*보낼|못\s*빌려|보낼게|입금할게|갚을게|빌려줄게|보내겠|송금하겠|입금하겠|갚겠|빌려주겠|걷|정산하자|각자\s*내|각자\s*부담/iu;
+const moneyDecisionCue = /request|ask|refusal|reject|decline|deny|acceptance|accept|approve|agree|allocation|split|요청|부탁|보내\s*달|입금해\s*줘(?!서)|거절|거부|안\s*보낼|못\s*빌려|보낼게|입금할게|갚을게|빌려줄게|보내겠|송금하겠|입금하겠|갚겠|빌려주겠|걷|정산하자|각자\s*내|각자\s*부담/iu;
 
 export function protectedIntentKind(intent: string): ProtectedIntentKind | null {
   const normalized = intent.normalize("NFKC").trim().toLocaleLowerCase();
