@@ -48,3 +48,31 @@ test("sends the saved browser intensity even without a one-request override", as
   expect(fetch).toHaveBeenCalledWith("/api/replies", expect.objectContaining({ body: expect.stringContaining('"indirectness":4') }));
   vi.unstubAllGlobals(); window.localStorage.clear();
 });
+
+test("allows a one-request creative intensity of seven", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ candidates: [
+    { strategy: "relationship_soft", text: "a", intentLabel: "a", riskLabel: null }, { strategy: "emotion_signal", text: "b", intentLabel: "b", riskLabel: null }, { strategy: "clearer_request", text: "c", intentLabel: "c", riskLabel: null },
+  ] }) }));
+  render(<ReplyComposer roomId="r1" participantId="p1" />);
+  const slider = screen.getByRole("slider", { name: "여자어 강도" });
+
+  expect(slider).toHaveAttribute("max", "7");
+  fireEvent.click(screen.getByLabelText("이번 답장만 강도 변경"));
+  fireEvent.change(slider, { target: { value: "7" } });
+  fireEvent.change(screen.getByLabelText("최근 대화"), { target: { value: "민수: 또 늦었어" } });
+  fireEvent.change(screen.getByLabelText("현재 상황"), { target: { value: "기다려서 서운해" } });
+  fireEvent.click(screen.getByRole("button", { name: "답장 3개 만들기" }));
+
+  await screen.findAllByTestId("reply-candidate");
+  expect(fetch).toHaveBeenCalledWith("/api/replies", expect.objectContaining({
+    body: expect.stringContaining('"indirectness":7'),
+  }));
+  vi.unstubAllGlobals();
+});
+
+test("loads a saved creative intensity of seven", () => {
+  window.localStorage.setItem("reply-default-indirectness", "7");
+  render(<ReplyComposer roomId="r1" participantId="p1" />);
+
+  expect(screen.getByRole("slider", { name: "여자어 강도" })).toHaveValue("7");
+});
