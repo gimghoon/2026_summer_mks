@@ -360,6 +360,50 @@ test("level seven warns without retrying for non-financial send requests", async
   }
 });
 
+test.each([
+  "회비 좀 보내줘",
+  "비용 보내줘",
+  "계좌로 보내줘",
+])("level five accepts an explicit contextual money request: %s", async (explicitRequest) => {
+  const explicitResponse = candidates([
+    explicitRequest,
+    `확실히 말할게, ${explicitRequest}`,
+    `${explicitRequest}라고 전할게`,
+  ]);
+  const gateway = new FakeGateway([explicitResponse]);
+
+  await expect(generateReplies(
+    { ...command, intent: explicitRequest, indirectness: 5 },
+    dependencies(gateway),
+  )).resolves.toMatchObject({ kind: "replies" });
+  expect(gateway.requests).toHaveLength(1);
+});
+
+test.each([
+  "회비 좀 보내줘",
+  "비용 보내줘",
+  "계좌로 보내줘",
+])("level seven does not warn about an explicit contextual money request: %s", async (explicitRequest) => {
+  const explicitResponse = candidates([
+    explicitRequest,
+    `확실히 말할게, ${explicitRequest}`,
+    `${explicitRequest}라고 전할게`,
+  ]);
+  const gateway = new FakeGateway([explicitResponse]);
+
+  const result = await generateReplies(
+    { ...command, intent: explicitRequest, indirectness: 7 },
+    dependencies(gateway),
+  );
+
+  expect(result.kind).toBe("replies");
+  if (result.kind !== "replies") return;
+  expect(gateway.requests).toHaveLength(1);
+  for (const candidate of result.candidates) {
+    expect(candidate.warnings).not.toContain("important_intent_ambiguity");
+  }
+});
+
 test("uses an OpenAI-compatible homogeneous array schema for three candidates", async () => {
   const gateway = new FakeGateway([candidates([
     "바빴구나, 다음엔 말해줘",
