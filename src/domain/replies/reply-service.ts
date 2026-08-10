@@ -98,15 +98,20 @@ const candidateFields = {
   riskLabel: z.string().trim().min(1).max(160).nullable(),
 };
 
+const generatedCandidateSchema = z.object({
+  strategy: z.enum(strategyOrder),
+  ...candidateFields,
+});
+
 const generatedReplySchema = z.object({
-  candidates: z.tuple([
-    z.object({ strategy: z.literal("relationship_soft"), ...candidateFields }),
-    z.object({ strategy: z.literal("emotion_signal"), ...candidateFields }),
-    z.object({ strategy: z.literal("clearer_request"), ...candidateFields }),
-  ]),
+  candidates: z.array(generatedCandidateSchema).length(3),
 });
 
 type GeneratedReply = z.infer<typeof generatedReplySchema>;
+
+function hasExpectedStrategyOrder(candidates: GeneratedReply["candidates"]): boolean {
+  return candidates.every((candidate, index) => candidate.strategy === strategyOrder[index]);
+}
 
 const forbiddenCuePatterns: Record<string, RegExp[]> = {
   romantic_affection: [
@@ -362,6 +367,12 @@ export class ReplyService {
         });
       } catch (error) {
         if (!(error instanceof ModelResponseValidationError)) throw error;
+        validationRuleIds = ["OUTPUT_STRUCTURE"];
+        if (attempt === 0) continue;
+        throw new ReplyGenerationValidationError(validationRuleIds);
+      }
+
+      if (!hasExpectedStrategyOrder(generated.candidates)) {
         validationRuleIds = ["OUTPUT_STRUCTURE"];
         if (attempt === 0) continue;
         throw new ReplyGenerationValidationError(validationRuleIds);

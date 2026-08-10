@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type { StructuredModelRequest, ModelGateway } from "@/domain/models/gateway";
 import {
   generateReplies,
@@ -67,7 +69,7 @@ function candidates(texts: [string, string, string]) {
   };
 }
 
-function dependencies(gateway: FakeGateway, extra: Partial<Parameters<typeof generateReplies>[1]> = {}) {
+function dependencies(gateway: ModelGateway, extra: Partial<Parameters<typeof generateReplies>[1]> = {}) {
   return {
     gateway,
     contextProvider: { load: vi.fn(async () => context) },
@@ -97,6 +99,57 @@ test("returns exactly three candidates in the required strategy order", async ()
   expect(gateway.requests[0]!.system).toContain("female_friend");
   expect(gateway.requests[0]!.system).toContain("laughter");
   expect(gateway.requests[0]!.system).toContain("emoji");
+});
+
+test("uses an OpenAI-compatible homogeneous array schema for three candidates", async () => {
+  const gateway = new FakeGateway([candidates([
+    "바빴구나, 다음엔 말해줘",
+    "기다리면서 조금 아쉬웠어",
+    "늦을 때는 미리 알려줘",
+  ])]);
+
+  await generateReplies(command, dependencies(gateway));
+
+  const jsonSchema = z.toJSONSchema(gateway.requests[0]!.schema, { target: "draft-7" }) as {
+    properties?: {
+      candidates?: {
+        type?: string;
+        items?: unknown;
+        minItems?: number;
+        maxItems?: number;
+      };
+    };
+  };
+  const candidateArray = jsonSchema.properties?.candidates;
+  expect(candidateArray).toMatchObject({ type: "array", minItems: 3, maxItems: 3 });
+  expect(Array.isArray(candidateArray?.items)).toBe(false);
+});
+
+test("retries and rejects provider output with the wrong strategy order", async () => {
+  const wrongOrder = {
+    candidates: [
+      { strategy: "emotion_signal", text: "기다리면서 조금 아쉬웠어", intentLabel: "서운함 신호", riskLabel: null },
+      { strategy: "relationship_soft", text: "바빴구나, 다음엔 말해줘", intentLabel: "관계 유지", riskLabel: null },
+      { strategy: "clearer_request", text: "늦을 때는 미리 알려줘", intentLabel: "다음 행동 요청", riskLabel: null },
+    ],
+  };
+  const requests: StructuredModelRequest<unknown>[] = [];
+  const gateway: ModelGateway = {
+    async extract<T>(request: StructuredModelRequest<T>): Promise<T> {
+      requests.push(request as StructuredModelRequest<unknown>);
+      return wrongOrder as T;
+    },
+    async embed(texts: string[]): Promise<number[][]> {
+      return texts.map(() => [1]);
+    },
+  };
+
+  await expect(generateReplies(command, dependencies(gateway))).rejects.toMatchObject({
+    name: "ReplyGenerationValidationError",
+    ruleIds: ["OUTPUT_STRUCTURE"],
+  });
+  expect(requests).toHaveLength(2);
+  expect(JSON.parse(requests[1]!.input).validationRuleIds).toEqual(["OUTPUT_STRUCTURE"]);
 });
 
 test("does not infer personal devices from the pasted conversation alone", async () => {
