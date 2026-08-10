@@ -1,4 +1,8 @@
-import type { StructuredModelRequest, ModelGateway } from "@/domain/models/gateway";
+import {
+  ModelResponseValidationError,
+  type StructuredModelRequest,
+  type ModelGateway,
+} from "@/domain/models/gateway";
 import { decryptJson, encryptJson } from "@/domain/crypto/encrypted-json";
 import {
   extractRoomMemory,
@@ -182,7 +186,7 @@ class InMemoryMemoryRepository implements MemoryRepository {
       const decoded = decryptJson<TestChunkPayload | string>(latest.encryptedSummary);
       return this.changedChunkIds.has(chunk.id)
         || typeof decoded === "string"
-        || decoded.analysisComplete !== true;
+        || (decoded.analysisPrepared !== true && decoded.analysisComplete !== true);
     }).map((chunk) => {
       const latest = this.latestUpdates.get(chunk.id);
       if (!latest) return chunk;
@@ -217,7 +221,7 @@ class InMemoryMemoryRepository implements MemoryRepository {
     this.chunkUpdates.push(update);
     this.latestUpdates.set(update.chunkId, update);
     const decoded = decryptJson<TestChunkPayload | string>(update.encryptedSummary);
-    if (typeof decoded !== "string" && decoded.analysisComplete === true) {
+    if (typeof decoded !== "string" && (decoded.analysisPrepared === true || decoded.analysisComplete === true)) {
       this.changedChunkIds.delete(update.chunkId);
     }
   }
@@ -225,7 +229,19 @@ class InMemoryMemoryRepository implements MemoryRepository {
   async listChunkMemories(roomId: string): Promise<StoredChunkMemory[]> {
     return this.chunks.filter((chunk) => chunk.roomId === roomId).map((chunk) => {
       const update = this.latestUpdates.get(chunk.id);
-      if (!update) throw new Error("Chunk memory has not been analyzed");
+      if (!update) return {
+        chunkId: chunk.id,
+        summary: "",
+        emotions: [],
+        relationshipSignals: [],
+        sourceFingerprint: "",
+        analysisKey: "",
+        analysisPrepared: false,
+        analysisComplete: false,
+        candidateProfileFacts: [],
+        topicTags: [],
+        eventTypes: [],
+      };
       return {
         chunkId: chunk.id,
         ...decryptJson<ChunkMemoryPayload>(update.encryptedSummary),
@@ -233,6 +249,24 @@ class InMemoryMemoryRepository implements MemoryRepository {
         eventTypes: decryptJson<string[]>(update.encryptedEventTypes),
       };
     });
+  }
+
+  async markChunksComplete(roomId: string, chunkIds: string[]): Promise<void> {
+    for (const chunkId of chunkIds) {
+      const update = this.latestUpdates.get(chunkId);
+      if (!update || !this.chunks.some((chunk) => chunk.id === chunkId && chunk.roomId === roomId)) {
+        throw new Error("Chunk memory has not been prepared");
+      }
+      const payload = decryptJson<ChunkMemoryPayload>(update.encryptedSummary);
+      await this.updateChunkMemory({
+        ...update,
+        encryptedSummary: encryptJson<ChunkMemoryPayload>({
+          ...payload,
+          analysisPrepared: true,
+          analysisComplete: true,
+        }),
+      });
+    }
   }
 
   failNextRoomUpsert(): void {
@@ -407,12 +441,13 @@ test("hierarchical extraction preserves locked facts, provenance, encryption, an
   const initialChunkPayload = decryptJson<ChunkMemoryPayload>(memoryRepository.chunkUpdates[0]!.encryptedSummary);
   expect(initialChunkPayload.analysisComplete).toBe(false);
   const chunkPayload = decryptJson<ChunkMemoryPayload>(memoryRepository.chunkUpdates.at(-1)!.encryptedSummary);
-  expect(chunkPayload).toEqual({
+  expect(chunkPayload).toMatchObject({
     summary: "서로 농담을 주고받았다",
     emotions: ["즐거움"],
     relationshipSignals: ["친밀한 장난"],
     sourceFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
     analysisKey: expect.stringMatching(/^[a-f0-9]{64}$/),
+    analysisPrepared: true,
     analysisComplete: true,
   });
   expect(decryptJson<RoomMemoryPayload>(memoryRepository.roomMemory!.encryptedSummary)).toEqual({
@@ -439,6 +474,70 @@ test("hierarchical extraction preserves locked facts, provenance, encryption, an
   ))!.input) as Record<string, unknown>;
   expect(roomRequest).toHaveProperty("topicMemories");
   expect(roomRequest).not.toHaveProperty("childMemories");
+});
+
+test("checkpoints prepared chunks and resumes only unfinished model work", async () => {
+  const chunk = (index: number): MemoryChunk => ({
+    id: `chunk-${index}`,
+    roomId: "room-resume",
+    startedAt: new Date(`2026-08-07T00:0${index}:00Z`),
+    endedAt: new Date(`2026-08-07T00:0${index}:30Z`),
+    turns: [{
+      id: `turn-${index}`,
+      participantId: "participant-1",
+      participantName: "민수",
+      messages: [{ kind: "text", text: `대화 ${index}` }],
+    }],
+  });
+  const analysis = (index: number) => ({
+    topicTags: ["일상"],
+    eventTypes: ["daily_chat"],
+    emotions: [],
+    relationshipSignals: [],
+    summary: `요약 ${index}`,
+    candidateProfileFacts: [],
+  });
+  const memoryRepository = new InMemoryMemoryRepository([chunk(1), chunk(2), chunk(3)]);
+  const gateway = new FakeGateway([
+    analysis(1),
+    new ModelResponseValidationError(),
+    analysis(2),
+    analysis(3),
+    { topics: [{
+      key: "daily",
+      tags: ["일상"],
+      childChunkIds: ["chunk-1", "chunk-2", "chunk-3"],
+      summary: "일상 대화",
+    }] },
+    { summary: "일상 대화를 나누는 방" },
+  ]);
+  const dependencies = {
+    repository: memoryRepository,
+    profileRepository: new InMemoryProfileRepository(),
+    gateway,
+  };
+  const firstProgress: number[] = [];
+
+  await expect(extractRoomMemory("room-resume", dependencies, async (completed) => {
+    firstProgress.push(completed);
+  })).rejects.toBeInstanceOf(ModelResponseValidationError);
+
+  expect(firstProgress).toEqual([1]);
+  expect(memoryRepository.chunkUpdates).toHaveLength(1);
+  expect(decryptJson<ChunkMemoryPayload>(memoryRepository.chunkUpdates[0]!.encryptedSummary))
+    .toMatchObject({ analysisPrepared: true, analysisComplete: false });
+
+  const retryProgress: number[] = [];
+  await expect(extractRoomMemory("room-resume", dependencies, async (completed) => {
+    retryProgress.push(completed);
+  })).resolves.toMatchObject({ roomId: "room-resume" });
+
+  expect(retryProgress).toEqual([2, 3]);
+  const chunkRequests = gateway.requests.filter((request) => request.schemaName === "conversation_chunk_memory");
+  expect(chunkRequests.map((request) => JSON.parse(request.input).chunkId)).toEqual([
+    "chunk-1", "chunk-2", "chunk-2", "chunk-3",
+  ]);
+  expect(gateway.embeddedTexts).toHaveLength(3);
 });
 
 test("AI facts without evidence or bounded confidence are rejected", async () => {
@@ -664,7 +763,6 @@ test("an incomplete extraction retries idempotently and repairs facts and room m
     chunkAnalysis,
     topicAnalysis,
     new Error("room summary unavailable"),
-    chunkAnalysis,
     topicAnalysis,
     { summary: "영화 이야기가 자주 등장하는 친근한 방" },
   ]);
@@ -747,7 +845,6 @@ test("retry replaces a stale locked-fact proposal from the same chunk analysis",
     chunkAnalysis,
     topics,
     { summary: "농담이 자주 등장하는 방" },
-    chunkAnalysis,
     topics,
     { summary: "농담이 자주 등장하는 방" },
   ]);
@@ -771,7 +868,7 @@ test("retry replaces a stale locked-fact proposal from the same chunk analysis",
   });
 });
 
-test("divergent retry output replaces only additive facts owned by that analysis", async () => {
+test("retry replays checkpointed output without rerunning the chunk model", async () => {
   const profileRepository = new InMemoryProfileRepository();
   const profileService = new ProfileService(profileRepository);
   const unrelated = await profileService.applyAiInference({
@@ -836,7 +933,6 @@ test("divergent retry output replaces only additive facts owned by that analysis
     analysis("등산을 좋아한다"),
     topics,
     { summary: "취미를 공유하는 방" },
-    analysis("사진 촬영을 좋아한다"),
     topics,
     { summary: "취미를 공유하는 방" },
   ]);
@@ -852,9 +948,9 @@ test("divergent retry output replaces only additive facts owned by that analysis
   expect(facts.map((fact) => fact.value)).toEqual(expect.arrayContaining([
     "독서를 좋아한다",
     "가족 이야기는 피한다",
-    "사진 촬영을 좋아한다",
+    "등산을 좋아한다",
   ]));
-  expect(facts.map((fact) => fact.value)).not.toContain("등산을 좋아한다");
+  expect(facts.map((fact) => fact.value)).not.toContain("사진 촬영을 좋아한다");
   expect(facts.filter((fact) => fact.kind === "interest")).toHaveLength(2);
   expect(facts).toContainEqual(expect.objectContaining({ id: unrelated.id }));
   expect(facts).toContainEqual(expect.objectContaining({ id: locked.id, locked: true }));
@@ -972,7 +1068,7 @@ test("changed chunk fingerprint replaces divergent additive output from its prio
   const gateway = new FakeGateway([
     analysis("등산을 좋아한다"), topics, { summary: "취미를 공유하는 방" },
     analysis("사진 촬영을 좋아한다"), topics, new Error("changed room summary unavailable"),
-    analysis("사진 촬영을 좋아한다"), topics, { summary: "취미 기록이 수정된 방" },
+    topics, { summary: "취미 기록이 수정된 방" },
   ]);
   const dependencies = { repository: memoryRepository, profileRepository, gateway };
 

@@ -65,7 +65,9 @@ export type ChunkMemoryPayload = {
   relationshipSignals: string[];
   sourceFingerprint: string;
   analysisKey: string;
+  analysisPrepared?: boolean;
   analysisComplete: boolean;
+  candidateProfileFacts?: AiProfileFact[];
   previousAnalysisKeys?: string[];
   legacyAnalysisIncomplete?: boolean;
   legacyIncompleteEvidenceTurnIds?: string[];
@@ -105,6 +107,7 @@ export interface MemoryRepository {
   listRoomParticipants(roomId: string): Promise<RoomParticipantIdentity[]>;
   updateChunkMemory(update: ChunkMemoryUpdate): Promise<void>;
   listChunkMemories(roomId: string): Promise<StoredChunkMemory[]>;
+  markChunksComplete(roomId: string, chunkIds: string[]): Promise<void>;
   upsertRoomMemory(roomId: string, encryptedSummary: string): Promise<void>;
 }
 
@@ -193,9 +196,13 @@ export function createDrizzleMemoryRepository(
       }));
       return loaded.flatMap<MemoryChunk>(({ memoryChunk, encryptedSummary }) => {
         const previous = decryptJson<Partial<ChunkMemoryPayload> | string>(encryptedSummary);
-        const needsAnalysis = typeof previous === "string"
-          || previous.analysisComplete !== true
-          || previous.sourceFingerprint !== chunkSourceFingerprint(memoryChunk, roomParticipants);
+        const sourceFingerprint = chunkSourceFingerprint(memoryChunk, roomParticipants);
+        const analysisKey = chunkAnalysisKey(roomId, memoryChunk.id, sourceFingerprint);
+        const reusable = typeof previous !== "string"
+          && previous.sourceFingerprint === sourceFingerprint
+          && previous.analysisKey === analysisKey
+          && (previous.analysisPrepared === true || previous.analysisComplete === true);
+        const needsAnalysis = !reusable;
         if (!needsAnalysis) return [];
         if (typeof previous === "string") {
           return [memoryChunk];
@@ -259,7 +266,9 @@ export function createDrizzleMemoryRepository(
           relationshipSignals: payload.relationshipSignals ?? [],
           sourceFingerprint: payload.sourceFingerprint ?? "",
           analysisKey: payload.analysisKey ?? "",
+          analysisPrepared: payload.analysisPrepared === true || payload.analysisComplete === true,
           analysisComplete: payload.analysisComplete === true,
+          candidateProfileFacts: payload.candidateProfileFacts ?? [],
           previousAnalysisKeys: payload.previousAnalysisKeys ?? [],
           legacyAnalysisIncomplete: payload.legacyAnalysisIncomplete === true,
           legacyIncompleteEvidenceTurnIds: payload.legacyIncompleteEvidenceTurnIds ?? [],
@@ -267,6 +276,26 @@ export function createDrizzleMemoryRepository(
           eventTypes: decryptJson<string[]>(row.encryptedEventTypes),
         };
       });
+    },
+
+    async markChunksComplete(roomId, chunkIds) {
+      if (chunkIds.length === 0) return;
+      const rows = await executor.select({
+        id: chunks.id,
+        encryptedSummary: chunks.encryptedSummary,
+      }).from(chunks).where(and(eq(chunks.roomId, roomId), inArray(chunks.id, chunkIds)));
+      for (const row of rows) {
+        const decoded = decryptJson<ChunkMemoryPayload | string>(row.encryptedSummary);
+        if (typeof decoded === "string") throw new Error(`Chunk ${row.id} is not prepared`);
+        await executor.update(chunks).set({
+          encryptedSummary: encryptJson<ChunkMemoryPayload>({
+            ...decoded,
+            analysisPrepared: true,
+            analysisComplete: true,
+          }),
+          updatedAt: new Date(),
+        }).where(and(eq(chunks.id, row.id), eq(chunks.roomId, roomId)));
+      }
     },
 
     async upsertRoomMemory(roomId, encryptedSummary) {
@@ -315,6 +344,20 @@ export type MemoryExtractorDependencies = {
   profileRepository: ProfileRepository;
   gateway: ModelGateway;
 };
+
+export class EvidenceValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EvidenceValidationError";
+  }
+}
+
+export class HierarchyValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HierarchyValidationError";
+  }
+}
 
 function replaceAllLiteral(text: string, search: string, replacement: string): string {
   return search ? text.split(search).join(replacement) : text;
@@ -374,15 +417,15 @@ function validateEvidence(
   const participantsInRoom = new Set(roomParticipants.map((participant) => participant.id));
   const turnsInChunk = new Set(chunk.turns.map((turn) => turn.id));
   if (!participantsInRoom.has(fact.participantId)) {
-    throw new Error("AI profile fact references a participant outside the room");
+    throw new EvidenceValidationError("AI profile fact references a participant outside the room");
   }
   if (fact.evidenceTurnIds.some((turnId) => !turnsInChunk.has(turnId))) {
-    throw new Error("AI profile fact references evidence outside the chunk");
+    throw new EvidenceValidationError("AI profile fact references evidence outside the chunk");
   }
   if (fact.targetFactId) {
     const target = existingFacts.find((candidate) => candidate.id === fact.targetFactId);
     if (!target || target.participantId !== fact.participantId || target.kind !== fact.kind) {
-      throw new Error("AI profile target must match the same participant and fact kind");
+      throw new EvidenceValidationError("AI profile target must match the same participant and fact kind");
     }
   }
 }
@@ -392,15 +435,15 @@ function validateTopicMemories(topics: TopicMemory[], chunksToCover: StoredChunk
   const coveredChunkIds = new Set<string>();
   const topicKeys = new Set<string>();
   for (const topic of topics) {
-    if (topicKeys.has(topic.key)) throw new Error("Topic memory keys must be unique");
+    if (topicKeys.has(topic.key)) throw new HierarchyValidationError("Topic memory keys must be unique");
     topicKeys.add(topic.key);
     for (const chunkId of topic.childChunkIds) {
-      if (!knownChunkIds.has(chunkId)) throw new Error("Topic memory references an unknown chunk");
+      if (!knownChunkIds.has(chunkId)) throw new HierarchyValidationError("Topic memory references an unknown chunk");
       coveredChunkIds.add(chunkId);
     }
   }
   if ([...knownChunkIds].some((chunkId) => !coveredChunkIds.has(chunkId))) {
-    throw new Error("Topic memories must cover every room chunk");
+    throw new HierarchyValidationError("Topic memories must cover every room chunk");
   }
 }
 
@@ -412,16 +455,28 @@ function defaultDependencies(): MemoryExtractorDependencies {
   };
 }
 
-export async function extractRoomMemory(
+export type PreparedRoomAnalysis = {
+  roomId: string;
+  analysisKeys: string[];
+  legacyEvidenceTurnIds: string[];
+  profileOperations: AiProfileFact[];
+  topicMemory: TopicMemory[];
+  roomSummary: string;
+  chunkIds: string[];
+};
+
+export async function prepareRoomChunks(
   roomId: string,
   dependencies: MemoryExtractorDependencies = defaultDependencies(),
-): Promise<RoomMemoryResult> {
-  const pendingChunks = await dependencies.repository.listChunksForAnalysis(roomId);
-  if (pendingChunks.length === 0) {
-    return { roomId, updatedChunkIds: [], proposedFacts: [] };
-  }
+  onPrepared: (completedChunks: number) => Promise<void> = async () => {},
+): Promise<string[]> {
+  const [pendingChunks, existingMemories, roomParticipants] = await Promise.all([
+    dependencies.repository.listChunksForAnalysis(roomId),
+    dependencies.repository.listChunkMemories(roomId),
+    dependencies.repository.listRoomParticipants(roomId),
+  ]);
+  if (pendingChunks.length === 0) return [];
 
-  const roomParticipants = await dependencies.repository.listRoomParticipants(roomId);
   const profileService = new ProfileService(dependencies.profileRepository);
   const preparedChunks = pendingChunks.map((chunk) => {
     const redactedText = redactChunkForEmbedding(chunk, roomParticipants);
@@ -440,24 +495,19 @@ export async function extractRoomMemory(
         : [],
     };
   });
-  const pendingAnalysisKeys = [...new Set(preparedChunks.flatMap((item) => [
+  const excludedKeys = [...new Set(preparedChunks.flatMap((item) => [
     item.analysisKey,
     ...item.previousAnalysisKeys,
   ]))];
   const existingProfileFacts = (await Promise.all(roomParticipants.map((participant) => (
-    profileService.listProfileFacts(participant.id, pendingAnalysisKeys)
+    profileService.listProfileFacts(participant.id, excludedKeys)
   )))).flat();
+  const completedBefore = existingMemories.filter((memory) => (
+    memory.analysisPrepared === true || memory.analysisComplete === true
+  )).length;
 
-  const analyses = [];
-  for (const prepared of preparedChunks) {
-    const {
-      chunk,
-      redactedText,
-      sourceFingerprint,
-      analysisKey,
-      previousAnalysisKeys,
-      legacyIncompleteEvidenceTurnIds,
-    } = prepared;
+  const updatedChunkIds: string[] = [];
+  for (const [index, prepared] of preparedChunks.entries()) {
     const analysis = await dependencies.gateway.extract({
       purpose: "analysis",
       schemaName: "conversation_chunk_memory",
@@ -471,8 +521,8 @@ export async function extractRoomMemory(
       ].join(" "),
       input: JSON.stringify({
         roomId,
-        chunkId: chunk.id,
-        conversation: redactedText,
+        chunkId: prepared.chunk.id,
+        conversation: prepared.redactedText,
         existingProfileFacts: existingProfileFacts.map((fact) => ({
           id: fact.id,
           participantId: fact.participantId,
@@ -482,57 +532,50 @@ export async function extractRoomMemory(
       }),
     });
     for (const fact of analysis.candidateProfileFacts) {
-      validateEvidence(chunk, fact, roomParticipants, existingProfileFacts);
+      validateEvidence(prepared.chunk, fact, roomParticipants, existingProfileFacts);
     }
-    analyses.push({
-      chunk,
-      redactedText,
-      sourceFingerprint,
-      analysisKey,
-      previousAnalysisKeys,
-      legacyIncompleteEvidenceTurnIds,
-      analysis,
-    });
-  }
-
-  const embeddings = await dependencies.gateway.embed(analyses.map((item) => item.redactedText));
-  if (embeddings.length !== analyses.length) throw new Error("Embedding count did not match chunk count");
-
-  const updates = analyses.map((item, index) => {
-    const embedding = embeddings[index];
+    const [embedding] = await dependencies.gateway.embed([prepared.redactedText]);
     if (!embedding || embedding.length === 0) throw new Error("Model returned an empty embedding");
-    return {
-      item,
-      embedding,
-      encryptedTopicTags: encryptJson(item.analysis.topicTags),
-      encryptedEventTypes: encryptJson(item.analysis.eventTypes),
-    };
-  });
-
-  // A fingerprint alone is not a completion marker. Persist the analyzed
-  // content as incomplete before any downstream profile or hierarchy writes.
-  for (const update of updates) {
+    const candidateProfileFacts = analysis.candidateProfileFacts.map((candidate) => ({
+      ...candidate,
+      analysisKey: prepared.analysisKey,
+    }));
     await dependencies.repository.updateChunkMemory({
       roomId,
-      chunkId: update.item.chunk.id,
+      chunkId: prepared.chunk.id,
       encryptedSummary: encryptJson<ChunkMemoryPayload>({
-        summary: update.item.analysis.summary,
-        emotions: update.item.analysis.emotions,
-        relationshipSignals: update.item.analysis.relationshipSignals,
-        sourceFingerprint: update.item.sourceFingerprint,
-        analysisKey: update.item.analysisKey,
+        summary: analysis.summary,
+        emotions: analysis.emotions,
+        relationshipSignals: analysis.relationshipSignals,
+        sourceFingerprint: prepared.sourceFingerprint,
+        analysisKey: prepared.analysisKey,
+        analysisPrepared: true,
         analysisComplete: false,
-        previousAnalysisKeys: update.item.previousAnalysisKeys,
-        legacyAnalysisIncomplete: update.item.legacyIncompleteEvidenceTurnIds.length > 0,
-        legacyIncompleteEvidenceTurnIds: update.item.legacyIncompleteEvidenceTurnIds,
+        candidateProfileFacts,
+        previousAnalysisKeys: prepared.previousAnalysisKeys,
+        legacyAnalysisIncomplete: prepared.legacyIncompleteEvidenceTurnIds.length > 0,
+        legacyIncompleteEvidenceTurnIds: prepared.legacyIncompleteEvidenceTurnIds,
       }),
-      encryptedTopicTags: update.encryptedTopicTags,
-      encryptedEventTypes: update.encryptedEventTypes,
-      embedding: update.embedding,
+      encryptedTopicTags: encryptJson(analysis.topicTags),
+      encryptedEventTypes: encryptJson(analysis.eventTypes),
+      embedding,
     });
+    updatedChunkIds.push(prepared.chunk.id);
+    await onPrepared(completedBefore + index + 1);
   }
+  return updatedChunkIds;
+}
 
+export async function planRoomFinalization(
+  roomId: string,
+  dependencies: MemoryExtractorDependencies = defaultDependencies(),
+): Promise<PreparedRoomAnalysis> {
   const storedChildMemories = await dependencies.repository.listChunkMemories(roomId);
+  if (storedChildMemories.length === 0 || storedChildMemories.some((memory) => (
+    memory.analysisPrepared !== true && memory.analysisComplete !== true
+  ))) {
+    throw new HierarchyValidationError("Every room chunk must be prepared before hierarchy synthesis");
+  }
   const topicResult = await dependencies.gateway.extract({
     purpose: "analysis",
     schemaName: "topic_memories",
@@ -547,7 +590,9 @@ export async function extractRoomMemory(
       childMemories: storedChildMemories.map(({
         sourceFingerprint: _sourceFingerprint,
         analysisKey: _analysisKey,
+        analysisPrepared: _analysisPrepared,
         analysisComplete: _analysisComplete,
+        candidateProfileFacts: _candidateProfileFacts,
         previousAnalysisKeys: _previousAnalysisKeys,
         legacyAnalysisIncomplete: _legacyAnalysisIncomplete,
         legacyIncompleteEvidenceTurnIds: _legacyIncompleteEvidenceTurnIds,
@@ -556,7 +601,6 @@ export async function extractRoomMemory(
     }),
   });
   validateTopicMemories(topicResult.topics, storedChildMemories);
-
   const roomMemory = await dependencies.gateway.extract({
     purpose: "analysis",
     schemaName: "room_memory",
@@ -565,55 +609,55 @@ export async function extractRoomMemory(
       "Build a hierarchical room summary from topic memories only.",
       "Capture relationship structure, atmosphere, recurring events, nicknames, jokes, sensitive topics, and major changes when supported.",
     ].join(" "),
-    input: JSON.stringify({
-      roomId,
-      topicMemories: topicResult.topics,
-    }),
+    input: JSON.stringify({ roomId, topicMemories: topicResult.topics }),
   });
-
-  // No profile writes occur until every model and embedding call succeeds.
-  // Replacement cleanup and replay share one profile transaction.
-  const profileOperations = analyses.flatMap((item) => (
-    item.analysis.candidateProfileFacts.map((candidate) => ({
-      ...candidate,
-      analysisKey: item.analysisKey,
-    }))
-  ));
-  const proposedFacts: ProfileFactView[] = await profileService.replaceAiAnalysis(
-    pendingAnalysisKeys,
-    profileOperations,
-    [...new Set(preparedChunks.flatMap((item) => item.legacyIncompleteEvidenceTurnIds))],
-  );
-
-  await dependencies.repository.upsertRoomMemory(roomId, encryptJson<RoomMemoryPayload>({
-    version: 1,
-    topics: topicResult.topics,
-    summary: roomMemory.summary,
-  }));
-
-  // Completion is the final write. Any earlier failure leaves these chunks
-  // retryable even when their source fingerprint is unchanged.
-  for (const update of updates) {
-    await dependencies.repository.updateChunkMemory({
-      roomId,
-      chunkId: update.item.chunk.id,
-      encryptedSummary: encryptJson<ChunkMemoryPayload>({
-        summary: update.item.analysis.summary,
-        emotions: update.item.analysis.emotions,
-        relationshipSignals: update.item.analysis.relationshipSignals,
-        sourceFingerprint: update.item.sourceFingerprint,
-        analysisKey: update.item.analysisKey,
-        analysisComplete: true,
-      }),
-      encryptedTopicTags: update.encryptedTopicTags,
-      encryptedEventTypes: update.encryptedEventTypes,
-      embedding: update.embedding,
-    });
-  }
-
   return {
     roomId,
-    updatedChunkIds: analyses.map((item) => item.chunk.id),
-    proposedFacts,
+    analysisKeys: [...new Set(storedChildMemories.flatMap((memory) => [
+      memory.analysisKey,
+      ...(memory.previousAnalysisKeys ?? []),
+    ]).filter(Boolean))],
+    legacyEvidenceTurnIds: [...new Set(storedChildMemories.flatMap((memory) => (
+      memory.legacyAnalysisIncomplete === true ? memory.legacyIncompleteEvidenceTurnIds ?? [] : []
+    )))],
+    profileOperations: storedChildMemories.flatMap((memory) => memory.candidateProfileFacts ?? []),
+    topicMemory: topicResult.topics,
+    roomSummary: roomMemory.summary,
+    chunkIds: storedChildMemories.map((memory) => memory.chunkId),
   };
+}
+
+export async function applyRoomFinalization(
+  plan: PreparedRoomAnalysis,
+  dependencies: MemoryExtractorDependencies = defaultDependencies(),
+): Promise<RoomMemoryResult> {
+  const proposedFacts = await new ProfileService(dependencies.profileRepository).replaceAiAnalysis(
+    plan.analysisKeys,
+    plan.profileOperations,
+    plan.legacyEvidenceTurnIds,
+  );
+  await dependencies.repository.upsertRoomMemory(plan.roomId, encryptJson<RoomMemoryPayload>({
+    version: 1,
+    topics: plan.topicMemory,
+    summary: plan.roomSummary,
+  }));
+  await dependencies.repository.markChunksComplete(plan.roomId, plan.chunkIds);
+  return { roomId: plan.roomId, updatedChunkIds: plan.chunkIds, proposedFacts };
+}
+
+export async function extractRoomMemory(
+  roomId: string,
+  dependencies: MemoryExtractorDependencies = defaultDependencies(),
+  onPrepared: (completedChunks: number) => Promise<void> = async () => {},
+): Promise<RoomMemoryResult> {
+  const [before, pending] = await Promise.all([
+    dependencies.repository.listChunkMemories(roomId),
+    dependencies.repository.listChunksForAnalysis(roomId),
+  ]);
+  if (pending.length === 0 && before.length > 0 && before.every((memory) => memory.analysisComplete === true)) {
+    return { roomId, updatedChunkIds: [], proposedFacts: [] };
+  }
+  await prepareRoomChunks(roomId, dependencies, onPrepared);
+  const plan = await planRoomFinalization(roomId, dependencies);
+  return applyRoomFinalization(plan, dependencies);
 }
