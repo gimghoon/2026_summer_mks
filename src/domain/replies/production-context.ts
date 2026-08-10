@@ -41,16 +41,22 @@ function normalizedName(name: string): string {
 }
 
 const participantNameSuffixes = new Set([
-  "", "은", "는", "이", "가", "을", "를", "에게", "한테", "와", "과", "의", "도", "님", "아", "야",
+  "", "은", "는", "이", "가", "을", "를", "에", "에게", "한테", "에서", "으로", "로", "와", "과", "의", "도", "만",
+  "님", "아", "야",
 ]);
+
+const koreanCounterNames = new Set(["하나", "둘", "셋", "넷", "다섯", "여섯", "일곱", "여덟", "아홉", "열"]);
 
 function mentionsParticipantName(framing: string, participantName: string): boolean {
   const name = participantName.replace(/\s+/gu, "");
   if (name.length < 2) return false;
   const tokens = framing.match(/[가-힣A-Za-z0-9]+/gu) ?? [];
-  return tokens.some((token) => (
-    token.startsWith(name) && participantNameSuffixes.has(token.slice(name.length))
-  ));
+  return tokens.some((token) => {
+    if (!token.startsWith(name)) return false;
+    const suffix = token.slice(name.length);
+    if (koreanCounterNames.has(name) && suffix === "만") return false;
+    return participantNameSuffixes.has(suffix);
+  });
 }
 
 function hasExplicitParticipantReference(

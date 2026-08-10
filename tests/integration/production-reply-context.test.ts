@@ -123,12 +123,35 @@ test("uses an explicit room participant name to resolve a recent person referenc
   const explicitCommand: GenerateRepliesCommand = {
     ...command,
     pastedConversation: "민수: 걔는 아직 돈 안 보냈어\n나: 이따 예약해야 해",
-    situation: "걔는 서연을 뜻하고, 서연만 아직 돈을 안 보낸 상태다",
-    intent: "서연에게 예약 전에 돈을 보내 달라고 말한다",
+    situation: "서연만 아직 돈을 안 보낸 상태다",
+    intent: "예약 전에 돈을 보내 달라고 말한다",
   };
 
   const context = await buildProductionReplyContext(
     explicitCommand,
+    "female_friend",
+    new RecordingGateway(),
+    snapshot,
+  );
+
+  expect(context.currentContext.needsUserQuestion).toBe(false);
+});
+
+test.each([
+  "서연에 대한 이야기를 하고 있다",
+  "서연에서 받은 답을 기다리고 있다",
+  "서연으로 대상을 정했다",
+  "민수로 대상을 정했다",
+])("resolves a recent person reference with a bounded name form: %s", async (situation) => {
+  const boundedCommand: GenerateRepliesCommand = {
+    ...command,
+    pastedConversation: "민수: 걔는 아직 돈 안 보냈어\n나: 이따 예약해야 해",
+    situation,
+    intent: "예약 전에 돈을 보내 달라고 말한다",
+  };
+
+  const context = await buildProductionReplyContext(
+    boundedCommand,
     "female_friend",
     new RecordingGateway(),
     snapshot,
