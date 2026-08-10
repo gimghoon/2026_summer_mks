@@ -1,10 +1,10 @@
 import OpenAI from "openai";
-import { zodTextFormat } from "openai/helpers/zod";
 import type { CreateEmbeddingResponse, EmbeddingCreateParams } from "openai/resources/embeddings";
 import type {
   Response,
   ResponseCreateParamsNonStreaming,
 } from "openai/resources/responses/responses";
+import { z } from "zod";
 
 import {
   ModelResponseValidationError,
@@ -85,7 +85,12 @@ export class OpenAIModelGateway implements ModelGateway {
       instructions: request.system,
       input: request.input,
       text: {
-        format: zodTextFormat(request.schema, request.schemaName),
+        format: {
+          type: "json_schema",
+          name: request.schemaName,
+          strict: true,
+          schema: z.toJSONSchema(request.schema, { target: "draft-7" }),
+        },
       },
       store: false,
     }));

@@ -49,6 +49,15 @@ test("uses the analysis model and strict structured output format", async () => 
       }),
     },
   }));
+  const format = responsesCreate.mock.calls[0]![0].text?.format;
+  expect(format).toMatchObject({
+    type: "json_schema",
+    schema: {
+      type: "object",
+      properties: { topic: { type: "string" } },
+      required: ["topic"],
+    },
+  });
 });
 
 test.each([
