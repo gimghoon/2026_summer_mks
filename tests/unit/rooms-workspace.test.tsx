@@ -1,9 +1,15 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { RoomsWorkspace } from "@/components/rooms-workspace";
 
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }), usePathname: () => "/rooms" }));
+const pushMock = vi.hoisted(() => vi.fn());
+const refreshMock = vi.hoisted(() => vi.fn());
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: pushMock, refresh: refreshMock }), usePathname: () => "/rooms" }));
 
-beforeEach(() => sessionStorage.clear());
+beforeEach(() => {
+  sessionStorage.clear();
+  pushMock.mockReset();
+  refreshMock.mockReset();
+});
 
 test("shows unparsed import lines before analysis can continue", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ roomId: "room-1", unparsedLines: [{ line: 9, text: "형식을 확인해 주세요" }] }) }));
@@ -16,6 +22,30 @@ test("shows unparsed import lines before analysis can continue", async () => {
   fireEvent.click(screen.getByText("확인할 줄 1개"));
   expect(screen.getByText("형식을 확인해 주세요")).toBeVisible();
   expect(screen.getByRole("button", { name: "검토 후 분석 시작" })).toBeEnabled();
+  expect(screen.getByText("파일 가져오기가 끝났어요")).toBeVisible();
+  expect(screen.queryByText("45%")).not.toBeInTheDocument();
+  vi.unstubAllGlobals();
+});
+
+test("starts analysis and navigates to the shared room progress screen", async () => {
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ roomId: "room-1", unparsedLines: [] }) })
+    .mockResolvedValueOnce({ ok: true });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<RoomsWorkspace initialRooms={[]} />);
+  fireEvent.change(screen.getByLabelText("카카오톡 파일 업로드"), {
+    target: { files: [new File(["대화"], "kakao.txt", { type: "text/plain" })] },
+  });
+  fireEvent.change(screen.getByLabelText("내 이름"), { target: { value: "나" } });
+  fireEvent.click(screen.getByRole("button", { name: "파일 가져오기" }));
+  fireEvent.click(await screen.findByRole("button", { name: "검토 후 분석 시작" }));
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    "/api/rooms/room-1/analysis",
+    { method: "POST" },
+  ));
+  expect(pushMock).toHaveBeenCalledWith("/rooms/room-1");
+  expect(screen.queryByText("65%")).not.toBeInTheDocument();
   vi.unstubAllGlobals();
 });
 
