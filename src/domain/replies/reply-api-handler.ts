@@ -1,9 +1,10 @@
 import { z } from "zod";
 
-import type {
-  GenerateRepliesCommand,
-  ReplyCandidate,
-  ReplyGenerationResult,
+import {
+  ReplyGenerationValidationError,
+  type GenerateRepliesCommand,
+  type ReplyCandidate,
+  type ReplyGenerationResult,
 } from "@/domain/replies/reply-service";
 import type { IndirectnessLevel } from "@/domain/replies/style-policy";
 import type { RelationshipStyle } from "@/db/schema";
@@ -131,7 +132,9 @@ export function createReplyPostHandler(dependencies: ReplyRouteDependencies) {
       dependencies.log("reply_request_failed", {
         roomId: body.roomId,
         participantId: body.participantId,
-        failure: error instanceof Error ? error.name : "unknown",
+        failure: error instanceof ReplyGenerationValidationError
+          ? `${error.name}:${error.ruleIds.join("|")}`
+          : error instanceof Error ? error.name : "unknown",
       });
       return new Response("Unable to generate replies", { status: 500 });
     }

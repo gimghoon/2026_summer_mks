@@ -1,7 +1,10 @@
 import {
   createReplyPostHandler,
 } from "@/domain/replies/reply-api-handler";
-import type { ReplyCandidate } from "@/domain/replies/reply-service";
+import {
+  ReplyGenerationValidationError,
+  type ReplyCandidate,
+} from "@/domain/replies/reply-service";
 
 const roomId = "11111111-1111-4111-8111-111111111111";
 const participantId = "22222222-2222-4222-8222-222222222222";
@@ -139,4 +142,26 @@ test("does not expose private generation errors", async () => {
   expect(await response.text()).not.toContain("PRIVATE_CONVERSATION_TEXT");
   expect(deps.log).toHaveBeenCalledWith("reply_request_failed", expect.not.objectContaining({ text: expect.anything() }));
   expect(JSON.stringify(deps.log.mock.calls)).not.toMatch(/PRIVATE_CONVERSATION_TEXT|민수|홍대|비밀/u);
+});
+
+test("logs only opaque validation rule IDs for rejected reply candidates", async () => {
+  const deps = dependencies({
+    generate: vi.fn(async () => {
+      throw new ReplyGenerationValidationError([
+        "UNSUPPORTED_PERSONAL_DEVICE",
+        "FACT_CONTRADICTION",
+      ]);
+    }),
+  });
+  const handler = createReplyPostHandler(deps);
+
+  const response = await handler(request(validBody({
+    pastedConversation: "PRIVATE_CONVERSATION_TEXT",
+  })));
+
+  expect(response.status).toBe(500);
+  expect(deps.log).toHaveBeenCalledWith("reply_request_failed", expect.objectContaining({
+    failure: "ReplyGenerationValidationError:UNSUPPORTED_PERSONAL_DEVICE|FACT_CONTRADICTION",
+  }));
+  expect(JSON.stringify(deps.log.mock.calls)).not.toContain("PRIVATE_CONVERSATION_TEXT");
 });
