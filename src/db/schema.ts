@@ -41,6 +41,28 @@ export const rooms = pgTable("rooms", {
   updatedAt: updatedAt(),
 });
 
+export const roomAnalysisRuns = pgTable(
+  "room_analysis_runs",
+  {
+    roomId: uuid("room_id").primaryKey().references(() => rooms.id, { onDelete: "cascade" }),
+    status: text("status").notNull(),
+    stage: text("stage").notNull(),
+    completedChunks: integer("completed_chunks").notNull().default(0),
+    totalChunks: integer("total_chunks").notNull().default(0),
+    failure: text("failure").notNull().default("none"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    check("room_analysis_runs_status_check", sql`${table.status} in ('pending', 'analyzing', 'finalizing', 'ready', 'failed')`),
+    check("room_analysis_runs_stage_check", sql`${table.stage} in ('chunks', 'hierarchy', 'profiles', 'complete')`),
+    check("room_analysis_runs_completed_nonnegative_check", sql`${table.completedChunks} >= 0`),
+    check("room_analysis_runs_total_nonnegative_check", sql`${table.totalChunks} >= 0`),
+    check("room_analysis_runs_completed_within_total_check", sql`${table.completedChunks} <= ${table.totalChunks}`),
+    check("room_analysis_runs_failure_check", sql`${table.failure} in ('none', 'provider_rejected', 'provider_unavailable', 'model_validation', 'evidence_validation', 'hierarchy_validation', 'database', 'unexpected')`),
+  ],
+);
+
 export const participants = pgTable(
   "participants",
   {

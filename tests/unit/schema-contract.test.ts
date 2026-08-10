@@ -11,6 +11,7 @@ import {
   profileFacts,
   replyCandidates,
   replyRequests,
+  roomAnalysisRuns,
   roomMemories,
   rooms,
   turns,
@@ -83,6 +84,18 @@ test("preserves idempotent imports and vector search configuration", () => {
   ]));
 });
 
+test("tracks one cascading analysis run per room", () => {
+  expect(getTableName(roomAnalysisRuns)).toBe("room_analysis_runs");
+  const columns = getTableColumns(roomAnalysisRuns);
+  expect(columns.roomId.primary).toBe(true);
+  expect(Object.keys(columns)).toEqual(expect.arrayContaining([
+    "status", "stage", "completedChunks", "totalChunks", "failure", "updatedAt",
+  ]));
+  expect(getTableConfig(roomAnalysisRuns).foreignKeys).toEqual([
+    expect.objectContaining({ onDelete: "cascade" }),
+  ]);
+});
+
 test("registers a vector-enabled initial migration for all tables", () => {
   const migration = readFileSync("src/db/migrations/0001_initial.sql", "utf8");
   const journal = JSON.parse(readFileSync("src/db/migrations/meta/_journal.json", "utf8")) as {
@@ -98,4 +111,17 @@ test("registers a vector-enabled initial migration for all tables", () => {
   expect(journal.entries).toEqual(expect.arrayContaining([
     expect.objectContaining({ tag: "0001_initial" }),
   ]));
+});
+
+test("registers the constrained room analysis progress migration", () => {
+  const migration = readFileSync("src/db/migrations/0002_room_analysis_runs.sql", "utf8");
+  const journal = JSON.parse(readFileSync("src/db/migrations/meta/_journal.json", "utf8")) as {
+    entries: Array<{ tag: string }>;
+  };
+
+  expect(migration).toMatch(/CREATE TABLE\s+"?room_analysis_runs"?/i);
+  expect(migration).toMatch(/REFERENCES\s+"?(?:public"?\.)?"?rooms"?\("?id"?\)\s+ON DELETE cascade/i);
+  expect(migration).toMatch(/"?completed_chunks"? >= 0/i);
+  expect(migration).toMatch(/"?completed_chunks"? <= (?:"room_analysis_runs"\.)?"?total_chunks"?/i);
+  expect(journal.entries).toContainEqual(expect.objectContaining({ tag: "0002_room_analysis_runs" }));
 });
