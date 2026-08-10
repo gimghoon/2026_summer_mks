@@ -26,6 +26,26 @@ test.each(["money_refusal", "consent_boundary", "safety_plan", "firm_rejection",
   },
 );
 
+test("completed payment praise is not forced to remain explicit", () => {
+  const policy = buildStylePolicy({
+    relationship: "female_friend",
+    indirectness: 7,
+    intent: "민서가 돈 보낸 거를 토대로 칭찬 아닌 칭찬을 하고 싶어",
+  });
+
+  expect(policy.mustRemainExplicit).toBe(false);
+});
+
+test.each([
+  "돈을 보내 달라고 요청하고 싶어",
+  "이번 송금은 거절하고 싶어",
+  "금액을 확인하고 입금하겠다고 말하고 싶어",
+  "공동 비용은 걷고 개인 쇼핑은 각자 내자고 말하고 싶어",
+])("real money decision remains explicit: %s", (intent) => {
+  const policy = buildStylePolicy({ relationship: "female_friend", indirectness: 7, intent });
+  expect(policy.mustRemainExplicit).toBe(true);
+});
+
 test("higher levels replace direct emotion with situation, pauses, and emotion clues", () => {
   const direct = buildStylePolicy({ relationship: "girlfriend", indirectness: 1, intent: "everyday" });
   const indirect = buildStylePolicy({ relationship: "girlfriend", indirectness: 5, intent: "everyday" });

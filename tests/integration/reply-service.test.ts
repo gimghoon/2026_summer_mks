@@ -81,6 +81,17 @@ function dependencies(gateway: ModelGateway, extra: Partial<Parameters<typeof ge
   };
 }
 
+const invalidAdvisoryResponse = candidates([
+  "사랑해 자기야, 무조건 보내, 오후 7시에~",
+  "공동 비용은 걷고 개인 쇼핑은 각자 내자",
+  "공동 비용은 걷고 개인 쇼핑은 각자 내자",
+]);
+
+const protectedAllocationCommand: GenerateRepliesCommand = {
+  ...command,
+  intent: "공동 비용은 걷고 개인 쇼핑은 각자 내자고 말하고 싶어",
+};
+
 test("returns exactly three candidates in the required strategy order", async () => {
   const gateway = new FakeGateway([candidates([
     "바빴구나, 다음엔 한마디만 해주면 좋을 것 같아",
@@ -148,6 +159,68 @@ test("level seven requests three context-grounded creative circumlocution strate
   expect(system).toContain("quiet aftertaste");
   expect(system).toContain("supplied conversation");
   expect(system).toContain("keep the actual decision unambiguous at every indirectness level");
+});
+
+test.each([6, 7] as const)(
+  "level %s returns candidate-aligned warnings without retrying content violations",
+  async (indirectness) => {
+    const gateway = new FakeGateway([invalidAdvisoryResponse]);
+    const factValidator = vi.fn((candidate: ReplyCandidateContent) => !candidate.text.includes("오후 7시"));
+
+    const result = await generateReplies(
+      { ...protectedAllocationCommand, indirectness },
+      dependencies(gateway, { factValidator }),
+    );
+
+    expect(result).toMatchObject({ kind: "replies" });
+    if (result.kind !== "replies") return;
+    expect(gateway.requests).toHaveLength(1);
+    expect(result.candidates[0]!.warnings).toEqual([
+      "emotional_inference",
+      "relationship_boundary",
+      "agency_or_safety",
+      "personal_style_mismatch",
+      "specific_fact_inference",
+      "profile_conflict",
+      "important_intent_ambiguity",
+    ]);
+    expect(result.candidates[1]!.warnings).toEqual(["emotional_inference", "duplicate_text"]);
+    expect(result.candidates[2]!.warnings).toEqual(["emotional_inference", "duplicate_text"]);
+    expect(result.candidates.flatMap((candidate) => candidate.warnings)).toEqual(expect.arrayContaining([
+      "personal_style_mismatch",
+      "important_intent_ambiguity",
+    ]));
+  },
+);
+
+test("level five retries once and rejects the same content violations with opaque rule IDs", async () => {
+  const gateway = new FakeGateway([invalidAdvisoryResponse, invalidAdvisoryResponse]);
+  const factValidator = vi.fn((candidate: ReplyCandidateContent) => !candidate.text.includes("오후 7시"));
+
+  await expect(generateReplies(
+    { ...protectedAllocationCommand, indirectness: 5 },
+    dependencies(gateway, { factValidator }),
+  )).rejects.toMatchObject({
+    ruleIds: [
+      "DUPLICATE_TEXT",
+      "RELATIONSHIP_FORBIDDEN_CUE",
+      "AGENCY_OR_SAFETY_VIOLATION",
+      "UNSUPPORTED_PERSONAL_DEVICE",
+      "UNSUPPORTED_SPECIFIC_FACT",
+      "FACT_CONTRADICTION",
+      "EXPLICIT_INTENT_AMBIGUOUS",
+    ],
+  });
+  expect(gateway.requests).toHaveLength(2);
+  expect(JSON.parse(gateway.requests[1]!.input).validationRuleIds).toEqual([
+    "DUPLICATE_TEXT",
+    "RELATIONSHIP_FORBIDDEN_CUE",
+    "AGENCY_OR_SAFETY_VIOLATION",
+    "UNSUPPORTED_PERSONAL_DEVICE",
+    "UNSUPPORTED_SPECIFIC_FACT",
+    "FACT_CONTRADICTION",
+    "EXPLICIT_INTENT_AMBIGUOUS",
+  ]);
 });
 
 test("uses an OpenAI-compatible homogeneous array schema for three candidates", async () => {

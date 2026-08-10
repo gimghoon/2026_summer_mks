@@ -10,6 +10,7 @@ import {
   buildPersonalContextEvidence,
   resolveContextBasis,
 } from "@/domain/replies/reply-evidence";
+import { protectedIntentKind } from "@/domain/replies/protected-intent";
 import {
   buildStylePolicy,
   supportedPersonalStyleDevices,
@@ -100,6 +101,34 @@ export type ReplyValidationRuleId =
   | "UNSUPPORTED_SPECIFIC_FACT"
   | "FACT_CONTRADICTION"
   | "EXPLICIT_INTENT_AMBIGUOUS";
+
+export type ReplyContentValidationRuleId = Exclude<ReplyValidationRuleId, "OUTPUT_STRUCTURE">;
+
+export type CandidateValidationResult = { ruleIds: ReplyValidationRuleId[] };
+
+const warningByRule = {
+  DUPLICATE_TEXT: "duplicate_text",
+  RELATIONSHIP_FORBIDDEN_CUE: "relationship_boundary",
+  AGENCY_OR_SAFETY_VIOLATION: "agency_or_safety",
+  UNSUPPORTED_PERSONAL_DEVICE: "personal_style_mismatch",
+  UNSUPPORTED_SPECIFIC_FACT: "specific_fact_inference",
+  FACT_CONTRADICTION: "profile_conflict",
+  EXPLICIT_INTENT_AMBIGUOUS: "important_intent_ambiguity",
+} as const satisfies Record<ReplyContentValidationRuleId, ReplyWarning>;
+
+const contentRuleOrder = Object.keys(warningByRule) as ReplyContentValidationRuleId[];
+
+export function warningForRule(ruleId: ReplyValidationRuleId): ReplyWarning {
+  if (ruleId === "OUTPUT_STRUCTURE") {
+    throw new Error("OUTPUT_STRUCTURE is not an advisory content warning");
+  }
+  return warningByRule[ruleId];
+}
+
+function flattenValidationRuleIds(results: CandidateValidationResult[]): ReplyContentValidationRuleId[] {
+  const found = new Set(results.flatMap((result) => result.ruleIds));
+  return contentRuleOrder.filter((ruleId) => found.has(ruleId));
+}
 
 export class ReplyGenerationValidationError extends Error {
   readonly ruleIds: ReplyValidationRuleId[];
@@ -230,18 +259,6 @@ function includesForbiddenCue(text: string, policy: StylePolicy): {
   return { relationship, safety };
 }
 
-type ExplicitIntentKind = "money" | "consent" | "safety" | "refusal" | "promise" | "other";
-
-function explicitIntentKind(intent: string): ExplicitIntentKind {
-  const normalized = intent.normalize("NFKC").toLocaleLowerCase();
-  if (/money|payment|loan|debt|돈|금전|송금|입금|대출|빚|빌려|계좌|결제|환불/u.test(normalized)) return "money";
-  if (/consent|동의|성적\s*접촉|스킨십|키스|만지/u.test(normalized)) return "consent";
-  if (/safety|안전|위험|응급|긴급|신고|귀가/u.test(normalized)) return "safety";
-  if (/rejection|refusal|reject|decline|거절|거부|선\s*긋/u.test(normalized)) return "refusal";
-  if (/promise|약속|계약|예약|마감/u.test(normalized)) return "promise";
-  return "other";
-}
-
 function isMoneyAllocationIntent(intent: string): boolean {
   return /같이|공동|모임|활동/u.test(intent)
     && /개인|각자|알아서|쇼핑/u.test(intent)
@@ -256,7 +273,7 @@ function preservesMoneyAllocation(text: string): boolean {
 
 function preservesExplicitIntent(intent: string, text: string): boolean {
   const normalizedIntent = intent.normalize("NFKC").toLocaleLowerCase();
-  switch (explicitIntentKind(intent)) {
+  switch (protectedIntentKind(intent)) {
     case "money": {
       if (isMoneyAllocationIntent(normalizedIntent)) {
         return preservesMoneyAllocation(text);
@@ -288,7 +305,7 @@ function preservesExplicitIntent(intent: string, text: string): boolean {
       }
       return /(?:약속|계약|예약|마감).{0,18}(?:지킬|못|할게|않|취소|유지)|(?:지킬|못\s*지킬).{0,12}약속/u.test(text);
     default:
-      return /하지\s*않을|안\s*(?:돼|할래|할게)|못\s*(?:해|할)|할게|싫어|괜찮(?:아|은지)\?|동의|거절/u.test(text);
+      return true;
   }
 }
 
@@ -346,13 +363,16 @@ async function validateCandidates(
   context: ReplyGenerationContext,
   policy: StylePolicy,
   factValidator: ReplyFactValidator,
-): Promise<ReplyValidationRuleId[]> {
-  const errors = new Set<ReplyValidationRuleId>();
+): Promise<CandidateValidationResult[]> {
   const normalized = candidates.map((candidate) => normalizeForDistinctness(candidate.text));
-  if (normalized.some((text, index) => normalized.indexOf(text) !== index)) errors.add("DUPLICATE_TEXT");
+  const normalizedCounts = new Map<string, number>();
+  for (const text of normalized) normalizedCounts.set(text, (normalizedCounts.get(text) ?? 0) + 1);
 
   const knownTexts = contextTexts(command, context);
-  for (const candidate of candidates) {
+  const results: CandidateValidationResult[] = [];
+  for (const [index, candidate] of candidates.entries()) {
+    const errors = new Set<ReplyContentValidationRuleId>();
+    if ((normalizedCounts.get(normalized[index]!) ?? 0) > 1) errors.add("DUPLICATE_TEXT");
     const forbidden = includesForbiddenCue(candidate.text, policy);
     if (forbidden.relationship) errors.add("RELATIONSHIP_FORBIDDEN_CUE");
     if (forbidden.safety) errors.add("AGENCY_OR_SAFETY_VIOLATION");
@@ -362,19 +382,21 @@ async function validateCandidates(
     if (policy.mustRemainExplicit && !preservesExplicitIntent(command.intent, candidate.text)) {
       errors.add("EXPLICIT_INTENT_AMBIGUOUS");
     }
+    results.push({ ruleIds: [...errors] });
   }
-  return [...errors];
+  return results;
 }
 
 function withPublicCandidateMetadata(
   candidate: GeneratedReply["candidates"][number],
   personalContextEvidence: ReturnType<typeof buildPersonalContextEvidence>,
+  warnings: ReplyWarning[] = [],
 ): ReplyCandidate {
   const { contextBasisIds, ...content } = candidate;
   return {
     ...content,
     contextBasis: resolveContextBasis(contextBasisIds, personalContextEvidence),
-    warnings: [],
+    warnings,
   };
 }
 
@@ -444,13 +466,34 @@ export class ReplyService {
         ReplyCandidateContent,
         ReplyCandidateContent,
       ] = [generated.candidates[0]!, generated.candidates[1]!, generated.candidates[2]!];
-      validationRuleIds = await validateCandidates(
+      const candidateValidationResults = await validateCandidates(
         candidateContents,
         command,
         context,
         policy,
         this.dependencies.factValidator,
       );
+      if (command.indirectness >= 6) {
+        const candidates: [ReplyCandidate, ReplyCandidate, ReplyCandidate] = [
+          withPublicCandidateMetadata(
+            generated.candidates[0]!,
+            personalContextEvidence,
+            ["emotional_inference", ...candidateValidationResults[0]!.ruleIds.map(warningForRule)],
+          ),
+          withPublicCandidateMetadata(
+            generated.candidates[1]!,
+            personalContextEvidence,
+            ["emotional_inference", ...candidateValidationResults[1]!.ruleIds.map(warningForRule)],
+          ),
+          withPublicCandidateMetadata(
+            generated.candidates[2]!,
+            personalContextEvidence,
+            ["emotional_inference", ...candidateValidationResults[2]!.ruleIds.map(warningForRule)],
+          ),
+        ];
+        return { kind: "replies", candidates };
+      }
+      validationRuleIds = flattenValidationRuleIds(candidateValidationResults);
       if (validationRuleIds.length === 0) {
         const candidates: [ReplyCandidate, ReplyCandidate, ReplyCandidate] = [
           withPublicCandidateMetadata(generated.candidates[0]!, personalContextEvidence),

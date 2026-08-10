@@ -1,4 +1,5 @@
 import type { RelationshipStyle } from "@/db/schema";
+import { protectedIntentKind } from "@/domain/replies/protected-intent";
 
 export type IndirectnessLevel = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
@@ -52,15 +53,6 @@ const friendForbidden = [
   "exclusive_possession",
 ] as const;
 
-const explicitIntentPatterns = [
-  /(?:^|[_\s-])(consent|safety|money|payment|loan|debt|firm[_-]?rejection|firm[_-]?refusal|important[_-]?promise)(?:$|[_\s-])/iu,
-  /동의|성적\s*접촉|스킨십|키스|만지/iu,
-  /안전|위험|응급|긴급|신고|귀가/iu,
-  /돈|금전|송금|입금|대출|빚|빌려|계좌|결제|환불/iu,
-  /단호한?\s*거절|확실한?\s*거절|거부|선\s*긋/iu,
-  /중요한?\s*약속|계약|예약|마감/iu,
-] as const;
-
 function assertPolicyInput(input: StylePolicyInput): void {
   if (input.relationship !== "female_friend" && input.relationship !== "girlfriend") {
     throw new Error("relationship must be female_friend or girlfriend");
@@ -71,8 +63,7 @@ function assertPolicyInput(input: StylePolicyInput): void {
 }
 
 export function isExplicitIntent(intent: string): boolean {
-  const normalized = intent.normalize("NFKC").trim();
-  return explicitIntentPatterns.some((pattern) => pattern.test(normalized));
+  return protectedIntentKind(intent) !== null;
 }
 
 function memoryAffirms(memory: string, cue: RegExp): boolean {
