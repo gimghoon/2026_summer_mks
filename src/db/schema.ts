@@ -180,6 +180,8 @@ export const replyCandidates = pgTable("reply_candidates", {
   encryptedText: text("encrypted_text").notNull(),
   encryptedIntentLabel: text("encrypted_intent_label").notNull(),
   encryptedRiskLabel: text("encrypted_risk_label"),
+  encryptedContextBasis: text("encrypted_context_basis"),
+  encryptedWarnings: text("encrypted_warnings"),
   selected: boolean("selected").notNull().default(false),
   encryptedEditedText: text("encrypted_edited_text"),
   createdAt: createdAt(),

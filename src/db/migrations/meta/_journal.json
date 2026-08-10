@@ -22,6 +22,13 @@
       "when": 1786354518419,
       "tag": "0003_expand_indirectness",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786377136059,
+      "tag": "0004_advisory_reply_metadata",
+      "breakpoints": true
     }
   ]
 }

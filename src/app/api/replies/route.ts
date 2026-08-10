@@ -197,6 +197,8 @@ function productionDependencies(): ReplyRouteDependencies {
           encryptedText: encryptJson(candidate.text),
           encryptedIntentLabel: encryptJson(candidate.intentLabel),
           encryptedRiskLabel: candidate.riskLabel === null ? null : encryptJson(candidate.riskLabel),
+          encryptedContextBasis: encryptJson(candidate.contextBasis),
+          encryptedWarnings: encryptJson(candidate.warnings),
         })));
       });
     },

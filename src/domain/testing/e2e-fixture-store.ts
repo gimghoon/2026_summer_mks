@@ -294,9 +294,9 @@ export function confirmFixtureCorrection(participantId: string, proposalId: stri
 }
 
 const fixtureCandidates: [ReplyCandidate, ReplyCandidate, ReplyCandidate] = [
-  { strategy: "relationship_soft", text: "다음에는 늦을 것 같으면 살짝만 알려줘 ㅎㅎ", intentLabel: "관계를 부드럽게 유지", riskLabel: null, contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: [] },
-  { strategy: "emotion_signal", text: "기다리면서 조금 아쉽긴 했어~", intentLabel: "서운함을 은근히 전달", riskLabel: "의도가 약하게 들릴 수 있어요", contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: [] },
-  { strategy: "clearer_request", text: "다음부터 늦을 때는 미리 한마디 부탁해", intentLabel: "기대 행동을 분명히 전달", riskLabel: null, contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: [] },
+  { strategy: "relationship_soft", text: "다음에는 늦을 것 같으면 살짝만 알려줘 ㅎㅎ", intentLabel: "관계를 부드럽게 유지", riskLabel: null, contextBasis: ["말투: 짧고 부드럽게 답함"], warnings: [] },
+  { strategy: "emotion_signal", text: "기다리면서 조금 아쉽긴 했어~", intentLabel: "서운함을 은근히 전달", riskLabel: "의도가 약하게 들릴 수 있어요", contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: ["emotional_inference"] },
+  { strategy: "clearer_request", text: "다음부터 늦을 때는 미리 한마디 부탁해", intentLabel: "기대 행동을 분명히 전달", riskLabel: null, contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: ["important_intent_ambiguity"] },
 ];
 
 export function generateFixtureReplies(input: {

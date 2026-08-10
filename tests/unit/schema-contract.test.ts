@@ -67,8 +67,19 @@ test("profile facts retain provenance and lock state", () => {
 
 test("reply candidates preserve strategy and selection feedback", () => {
   expect(Object.keys(getTableColumns(replyCandidates))).toEqual(expect.arrayContaining([
-    "replyRequestId", "strategy", "encryptedText", "selected", "encryptedEditedText",
+    "replyRequestId", "strategy", "encryptedText", "encryptedContextBasis", "encryptedWarnings", "selected", "encryptedEditedText",
   ]));
+});
+
+test("registers nullable encrypted reply evidence and warnings", () => {
+  const migration = readFileSync("src/db/migrations/0004_advisory_reply_metadata.sql", "utf8");
+  const journal = JSON.parse(readFileSync("src/db/migrations/meta/_journal.json", "utf8")) as {
+    entries: Array<{ tag: string }>;
+  };
+
+  expect(migration).toMatch(/ADD COLUMN "encrypted_context_basis" text/iu);
+  expect(migration).toMatch(/ADD COLUMN "encrypted_warnings" text/iu);
+  expect(journal.entries).toContainEqual(expect.objectContaining({ tag: "0004_advisory_reply_metadata" }));
 });
 
 test("preserves idempotent imports and vector search configuration", () => {
