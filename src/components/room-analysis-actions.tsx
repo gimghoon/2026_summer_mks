@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import type { AnalysisProgress } from "@/domain/memory/analysis-progress";
 import type { RoomView } from "@/domain/rooms/room-read-types";
 
-type Props = { room: RoomView; pollIntervalMs?: number };
+type Props = { room: RoomView; pollIntervalMs?: number; staleAfterMs?: number };
 
 function stageCopy(progress: AnalysisProgress): string {
   if (progress.status === "failed") return "분석을 마치지 못했어요. 다시 시도해 주세요.";
@@ -15,7 +15,11 @@ function stageCopy(progress: AnalysisProgress): string {
   return `청크 ${progress.completedChunks}/${progress.totalChunks} 분석 완료`;
 }
 
-export function RoomAnalysisActions({ room, pollIntervalMs = 1_000 }: Props) {
+export function RoomAnalysisActions({
+  room,
+  pollIntervalMs = 1_000,
+  staleAfterMs = 10 * 60_000,
+}: Props) {
   const router = useRouter();
   const refreshed = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -70,7 +74,10 @@ export function RoomAnalysisActions({ room, pollIntervalMs = 1_000 }: Props) {
   const percentage = progress && progress.totalChunks > 0
     ? Math.floor((progress.completedChunks / progress.totalChunks) * 100)
     : 0;
-  const serverBusy = progress?.status === "analyzing" || progress?.status === "finalizing";
+  const lastUpdate = progress?.updatedAt ? Date.parse(progress.updatedAt) : Number.NaN;
+  const abandoned = Number.isFinite(lastUpdate) && Date.now() - lastUpdate > staleAfterMs;
+  const serverBusy = (progress?.status === "analyzing" || progress?.status === "finalizing")
+    && !abandoned;
   const analysisBusy = busy || serverBusy;
   return (
     <section className="upload-panel">

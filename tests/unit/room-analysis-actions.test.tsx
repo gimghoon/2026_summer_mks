@@ -94,3 +94,20 @@ test("refreshes server-rendered room controls when polling reaches ready", async
   expect(await screen.findByText("분석 완료 · 프로필과 답장을 만들 수 있어요.")).toBeVisible();
   expect(refreshMock).toHaveBeenCalledTimes(1);
 });
+
+test("allows recovery when a persisted active run has stopped updating", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+    roomId: room.id,
+    status: "analyzing",
+    stage: "chunks",
+    completedChunks: 17,
+    totalChunks: 50,
+    failure: "none",
+    updatedAt: "2026-08-10T00:00:00.000Z",
+  }) }));
+  vi.setSystemTime(new Date("2026-08-10T00:11:00.000Z"));
+
+  render(<RoomAnalysisActions room={room} staleAfterMs={10 * 60_000} />);
+
+  expect(await screen.findByRole("button", { name: "분석 다시 시도" })).toBeEnabled();
+});

@@ -24,6 +24,8 @@ export type AnalysisProgress = {
   completedChunks: number;
   totalChunks: number;
   failure: AnalysisFailureCode;
+  /** Present for persisted production runs; used only to recover abandoned jobs. */
+  updatedAt?: string;
 };
 
 export interface AnalysisProgressStore {
@@ -108,15 +110,17 @@ export function createDrizzleAnalysisProgressStore(
         completedChunks: roomAnalysisRuns.completedChunks,
         totalChunks: roomAnalysisRuns.totalChunks,
         failure: roomAnalysisRuns.failure,
+        updatedAt: roomAnalysisRuns.updatedAt,
       }).from(roomAnalysisRuns).where(eq(roomAnalysisRuns.roomId, roomId));
       const row = rows[0];
       if (!row) return null;
-      return row as AnalysisProgress;
+      return { ...row, updatedAt: row.updatedAt.toISOString() } as AnalysisProgress;
     },
     async put(progress) {
-      await executor.insert(roomAnalysisRuns).values(progress).onConflictDoUpdate({
+      const { updatedAt: _updatedAt, ...fields } = progress;
+      await executor.insert(roomAnalysisRuns).values(fields).onConflictDoUpdate({
         target: roomAnalysisRuns.roomId,
-        set: { ...progress, updatedAt: new Date() },
+        set: { ...fields, updatedAt: new Date() },
       });
     },
   };
