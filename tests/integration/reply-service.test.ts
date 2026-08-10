@@ -99,6 +99,10 @@ test("returns exactly three candidates in the required strategy order", async ()
   expect(gateway.requests[0]!.system).toContain("female_friend");
   expect(gateway.requests[0]!.system).toContain("laughter");
   expect(gateway.requests[0]!.system).toContain("emoji");
+  expect(gateway.requests[0]!.system).toContain("laughter=ㅋㅋ/ㅎㅎ");
+  expect(gateway.requests[0]!.system).toContain("tilde=~");
+  expect(gateway.requests[0]!.system).toContain("emoji=emoji");
+  expect(gateway.requests[0]!.system).toContain("only if its key is listed in Policy.allowedDevices");
 });
 
 test("uses an OpenAI-compatible homogeneous array schema for three candidates", async () => {
@@ -314,6 +318,41 @@ test("a positive money decision is validated as acceptance rather than forced in
 
   await expect(generateReplies(paymentCommand, dependencies(gateway))).resolves.toMatchObject({ kind: "replies" });
   expect(gateway.requests).toHaveLength(1);
+});
+
+test("preserves both sides of a shared-versus-personal expense boundary", async () => {
+  const allocationCommand = {
+    ...command,
+    intent: "같이 하는 활동은 돈을 한번에 걷되 개인적인 쇼핑은 알아서 쓰는 거를 말하고 싶어",
+  };
+  const gateway = new FakeGateway([candidates([
+    "같이 하는 활동비는 한 번에 걷고 개인 쇼핑은 각자 부담하는 걸로 하자",
+    "공동으로 쓰는 돈은 모아서 정산하고 쇼핑 비용은 각자 내면 좋겠어",
+    "활동 비용은 같이 걷고 개인적으로 사는 건 각자 알아서 쓰자",
+  ])]);
+
+  await expect(generateReplies(allocationCommand, dependencies(gateway)))
+    .resolves.toMatchObject({ kind: "replies" });
+  expect(gateway.requests).toHaveLength(1);
+});
+
+test("rejects an expense-allocation reply that omits the personal-expense boundary", async () => {
+  const allocationCommand = {
+    ...command,
+    intent: "같이 하는 활동은 돈을 한번에 걷되 개인적인 쇼핑은 알아서 쓰는 거를 말하고 싶어",
+  };
+  const incomplete = candidates([
+    "같이 하는 활동비는 한 번에 걷자",
+    "공동 비용은 모아서 정산하자",
+    "활동 비용은 같이 내자",
+  ]);
+  const gateway = new FakeGateway([incomplete, incomplete]);
+
+  await expect(generateReplies(allocationCommand, dependencies(gateway))).rejects.toMatchObject({
+    ruleIds: ["EXPLICIT_INTENT_AMBIGUOUS"],
+  });
+  expect(JSON.parse(gateway.requests[1]!.input).validationRuleIds)
+    .toEqual(["EXPLICIT_INTENT_AMBIGUOUS"]);
 });
 
 test("returns one clarification question without calling the model", async () => {

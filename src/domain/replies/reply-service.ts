@@ -222,10 +222,25 @@ function explicitIntentKind(intent: string): ExplicitIntentKind {
   return "other";
 }
 
+function isMoneyAllocationIntent(intent: string): boolean {
+  return /같이|공동|모임|활동/u.test(intent)
+    && /개인|각자|알아서|쇼핑/u.test(intent)
+    && /돈|비용|회비|정산|걷/u.test(intent);
+}
+
+function preservesMoneyAllocation(text: string): boolean {
+  const shared = /(?:같이|공동|모임|활동|공금).{0,20}(?:한\s*번에|모아|걷|정산|같이\s*내)|(?:한\s*번에|모아|걷|정산).{0,20}(?:같이|공동|모임|활동|공금)/u.test(text);
+  const personal = /(?:개인|각자|쇼핑).{0,20}(?:각자|알아서|따로|본인|부담|쓰|내)|(?:각자|알아서|따로|본인).{0,20}(?:개인|쇼핑|비용|돈)/u.test(text);
+  return shared && personal;
+}
+
 function preservesExplicitIntent(intent: string, text: string): boolean {
   const normalizedIntent = intent.normalize("NFKC").toLocaleLowerCase();
   switch (explicitIntentKind(intent)) {
     case "money": {
+      if (isMoneyAllocationIntent(normalizedIntent)) {
+        return preservesMoneyAllocation(text);
+      }
       const refusal = /(?:돈|금전|금액|송금|입금|빌려|결제|환불).{0,18}(?:안\s*(?:돼|할|보낼|빌려)|못\s*(?:해|보내|빌려)|거절|어려워서.{0,8}안)|(?:안|못).{0,12}(?:송금|입금|빌려|결제)/u.test(text);
       const acceptance = /(?:돈|금전|금액|송금|입금|빌려|결제|환불).{0,18}(?:보낼게|송금할게|입금할게|빌려줄게|결제할게|갚을게|동의해)|(?:보낼게|송금할게|입금할게|빌려줄게|결제할게|갚을게).{0,12}(?:돈|금전|금액)/u.test(text);
       const request = /(?:돈|금전|금액|송금|입금|빌려|결제|환불).{0,18}(?:해\s*줄래\?|할\s*수\s*있어\?|부탁해)|(?:보내|빌려|결제).{0,8}(?:줄래\?|줄\s*수\s*있어\?)/u.test(text);
@@ -288,6 +303,7 @@ function generationSystem(policy: StylePolicy): string {
     "Preserve the user's agency: never coerce, threaten, harass, shame, manipulate, or intensify conflict.",
     "Do not include romantic, jealousy, or possessive cues when the relationship is female_friend.",
     "For money, consent, safety, firm rejection, and important promises, keep the actual decision unambiguous even at indirectness level five.",
+    "Personal device mapping: laughter=ㅋㅋ/ㅎㅎ, vowel_repetition=repeated Korean vowels, tilde=~, emoji=emoji. Use a personal device only if its key is listed in Policy.allowedDevices.",
     `Policy: ${JSON.stringify(policy)}`,
     "On a retry, validationRuleIds are opaque rule identifiers. Correct those rules without quoting or discussing the previous text.",
   ].join(" ");
