@@ -32,9 +32,9 @@ class RecordingGateway implements ModelGateway {
     this.requests.push(request as StructuredModelRequest<unknown>);
     return request.schema.parse({
       candidates: [
-        { strategy: "relationship_soft", text: "다음에는 미리 알려주면 좋겠어", intentLabel: "관계 유지", riskLabel: null },
-        { strategy: "emotion_signal", text: "기다리면서 조금 아쉽긴 했어", intentLabel: "감정 전달", riskLabel: null },
-        { strategy: "clearer_request", text: "다음부터는 늦을 때 알려줘", intentLabel: "요청", riskLabel: null },
+        { strategy: "relationship_soft", text: "다음에는 미리 알려주면 좋겠어", intentLabel: "관계 유지", riskLabel: null, contextBasisIds: [] },
+        { strategy: "emotion_signal", text: "기다리면서 조금 아쉽긴 했어", intentLabel: "감정 전달", riskLabel: null, contextBasisIds: [] },
+        { strategy: "clearer_request", text: "다음부터는 늦을 때 알려줘", intentLabel: "요청", riskLabel: null, contextBasisIds: [] },
       ],
     });
   }

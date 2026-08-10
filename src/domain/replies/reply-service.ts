@@ -7,6 +7,10 @@ import {
 } from "@/domain/models/gateway";
 import type { CurrentContextSelection } from "@/domain/replies/context-expander";
 import {
+  buildPersonalContextEvidence,
+  resolveContextBasis,
+} from "@/domain/replies/reply-evidence";
+import {
   buildStylePolicy,
   supportedPersonalStyleDevices,
   type IndirectnessLevel,
@@ -20,11 +24,26 @@ const strategyOrder = [
   "clearer_request",
 ] as const satisfies readonly ReplyStrategy[];
 
-export type ReplyCandidate = {
+export type ReplyWarning =
+  | "emotional_inference"
+  | "duplicate_text"
+  | "relationship_boundary"
+  | "agency_or_safety"
+  | "personal_style_mismatch"
+  | "specific_fact_inference"
+  | "profile_conflict"
+  | "important_intent_ambiguity";
+
+export type ReplyCandidateContent = {
   strategy: ReplyStrategy;
   text: string;
   intentLabel: string;
   riskLabel: string | null;
+};
+
+export type ReplyCandidate = ReplyCandidateContent & {
+  contextBasis: string[];
+  warnings: ReplyWarning[];
 };
 
 export type ReplyGenerationResult =
@@ -62,7 +81,7 @@ export interface ReplyContextProvider {
 }
 
 export type ReplyFactValidator = (
-  candidate: ReplyCandidate,
+  candidate: ReplyCandidateContent,
   context: ReplyGenerationContext,
 ) => boolean | Promise<boolean>;
 
@@ -101,6 +120,7 @@ const candidateFields = {
 const generatedCandidateSchema = z.object({
   strategy: z.enum(strategyOrder),
   ...candidateFields,
+  contextBasisIds: z.array(z.string().trim().min(1).max(80)).max(2),
 });
 
 const generatedReplySchema = z.object({
@@ -321,7 +341,7 @@ function generationSystem(policy: StylePolicy): string {
 }
 
 async function validateCandidates(
-  candidates: [ReplyCandidate, ReplyCandidate, ReplyCandidate],
+  candidates: [ReplyCandidateContent, ReplyCandidateContent, ReplyCandidateContent],
   command: GenerateRepliesCommand,
   context: ReplyGenerationContext,
   policy: StylePolicy,
@@ -344,6 +364,18 @@ async function validateCandidates(
     }
   }
   return [...errors];
+}
+
+function withPublicCandidateMetadata(
+  candidate: GeneratedReply["candidates"][number],
+  personalContextEvidence: ReturnType<typeof buildPersonalContextEvidence>,
+): ReplyCandidate {
+  const { contextBasisIds, ...content } = candidate;
+  return {
+    ...content,
+    contextBasis: resolveContextBasis(contextBasisIds, personalContextEvidence),
+    warnings: [],
+  };
 }
 
 export class ReplyService {
@@ -373,6 +405,7 @@ export class ReplyService {
       intent: command.intent,
       supportedDevices: supportedPersonalStyleDevices(memoryTexts),
     });
+    const personalContextEvidence = buildPersonalContextEvidence(context.participantProfiles);
     let validationRuleIds: ReplyValidationRuleId[] = [];
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -389,6 +422,7 @@ export class ReplyService {
             indirectness: command.indirectness,
             relationship: context.relationship,
             context: modelContext(context),
+            personalContextEvidence,
             validationRuleIds,
           }),
         });
@@ -405,15 +439,26 @@ export class ReplyService {
         throw new ReplyGenerationValidationError(validationRuleIds);
       }
 
-      const candidates = generated.candidates as [ReplyCandidate, ReplyCandidate, ReplyCandidate];
+      const candidateContents: [
+        ReplyCandidateContent,
+        ReplyCandidateContent,
+        ReplyCandidateContent,
+      ] = [generated.candidates[0]!, generated.candidates[1]!, generated.candidates[2]!];
       validationRuleIds = await validateCandidates(
-        candidates,
+        candidateContents,
         command,
         context,
         policy,
         this.dependencies.factValidator,
       );
-      if (validationRuleIds.length === 0) return { kind: "replies", candidates };
+      if (validationRuleIds.length === 0) {
+        const candidates: [ReplyCandidate, ReplyCandidate, ReplyCandidate] = [
+          withPublicCandidateMetadata(generated.candidates[0]!, personalContextEvidence),
+          withPublicCandidateMetadata(generated.candidates[1]!, personalContextEvidence),
+          withPublicCandidateMetadata(generated.candidates[2]!, personalContextEvidence),
+        ];
+        return { kind: "replies", candidates };
+      }
       if (attempt === 1) throw new ReplyGenerationValidationError(validationRuleIds);
     }
 

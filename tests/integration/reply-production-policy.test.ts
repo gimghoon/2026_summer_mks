@@ -47,9 +47,9 @@ class FakeGateway implements ModelGateway {
 function replySet(first: string) {
   return {
     candidates: [
-      { strategy: "relationship_soft", text: first, intentLabel: "관계 유지", riskLabel: null },
-      { strategy: "emotion_signal", text: "기다리면서 조금 아쉬웠어", intentLabel: "감정 전달", riskLabel: null },
-      { strategy: "clearer_request", text: "다음에는 알려줘", intentLabel: "요청", riskLabel: null },
+      { strategy: "relationship_soft", text: first, intentLabel: "관계 유지", riskLabel: null, contextBasisIds: [] },
+      { strategy: "emotion_signal", text: "기다리면서 조금 아쉬웠어", intentLabel: "감정 전달", riskLabel: null, contextBasisIds: [] },
+      { strategy: "clearer_request", text: "다음에는 알려줘", intentLabel: "요청", riskLabel: null, contextBasisIds: [] },
     ],
   };
 }

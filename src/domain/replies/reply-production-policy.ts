@@ -1,7 +1,7 @@
 import type { ContextSufficiency, DecryptedTurn } from "@/domain/replies/context-expander";
 import type {
   GenerateRepliesCommand,
-  ReplyCandidate,
+  ReplyCandidateContent,
   ReplyGenerationContext,
 } from "@/domain/replies/reply-service";
 
@@ -59,7 +59,7 @@ function knownFactTexts(context: ReplyGenerationContext): string[] {
  * participant/profile facts. It returns only a boolean so retry metadata
  * remains the opaque FACT_CONTRADICTION rule ID.
  */
-export function validatesReplyFact(candidate: ReplyCandidate, context: ReplyGenerationContext): boolean {
+export function validatesReplyFact(candidate: ReplyCandidateContent, context: ReplyGenerationContext): boolean {
   const candidatePolarity = polarity(candidate.text);
   if (!candidatePolarity) return true;
   return !knownFactTexts(context).some((fact) => {

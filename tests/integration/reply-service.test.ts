@@ -5,7 +5,7 @@ import {
   generateReplies,
   ReplyGenerationValidationError,
   type GenerateRepliesCommand,
-  type ReplyCandidate,
+  type ReplyCandidateContent,
   type ReplyGenerationContext,
 } from "@/domain/replies/reply-service";
 
@@ -59,12 +59,15 @@ const context: ReplyGenerationContext = {
   currentFacts: ["상대의 답이 오늘 늦었다"],
 };
 
-function candidates(texts: [string, string, string]) {
+function candidates(
+  texts: [string, string, string],
+  contextBasisIds: [string[], string[], string[]] = [[], [], []],
+) {
   return {
     candidates: [
-      { strategy: "relationship_soft", text: texts[0], intentLabel: "관계 유지", riskLabel: null },
-      { strategy: "emotion_signal", text: texts[1], intentLabel: "서운함 신호", riskLabel: "너무 돌려 들릴 수 있음" },
-      { strategy: "clearer_request", text: texts[2], intentLabel: "다음 행동 요청", riskLabel: null },
+      { strategy: "relationship_soft", text: texts[0], intentLabel: "관계 유지", riskLabel: null, contextBasisIds: contextBasisIds[0] },
+      { strategy: "emotion_signal", text: texts[1], intentLabel: "서운함 신호", riskLabel: "너무 돌려 들릴 수 있음", contextBasisIds: contextBasisIds[1] },
+      { strategy: "clearer_request", text: texts[2], intentLabel: "다음 행동 요청", riskLabel: null, contextBasisIds: contextBasisIds[2] },
     ],
   };
 }
@@ -103,6 +106,30 @@ test("returns exactly three candidates in the required strategy order", async ()
   expect(gateway.requests[0]!.system).toContain("tilde=~");
   expect(gateway.requests[0]!.system).toContain("emoji=emoji");
   expect(gateway.requests[0]!.system).toContain("only if its key is listed in Policy.allowedDevices");
+});
+
+test("exposes verified profile evidence for known IDs and a fixed fallback for unknown IDs", async () => {
+  const gateway = new FakeGateway([candidates([
+    "바빴구나, 다음엔 한마디만 해주면 좋을 것 같아",
+    "괜찮긴 한데 기다리면서 살짝 신경 쓰이긴 했어",
+    "다음부터 늦을 것 같으면 미리 알려줘",
+  ], [["profile-0"], ["invented"], []])]);
+
+  const result = await generateReplies(command, dependencies(gateway));
+
+  expect(result.kind).toBe("replies");
+  if (result.kind !== "replies") return;
+  expect(result.candidates[0]).toMatchObject({
+    contextBasis: ["speech_pattern: 짧고 부드럽게 말한다"],
+    warnings: [],
+  });
+  expect(result.candidates[1]).toMatchObject({
+    contextBasis: ["현재 상황과 답장 의도만 사용"],
+    warnings: [],
+  });
+  expect(JSON.parse(gateway.requests[0]!.input).personalContextEvidence).toEqual([
+    { id: "profile-0", summary: "speech_pattern: 짧고 부드럽게 말한다" },
+  ]);
 });
 
 test("level seven requests three context-grounded creative circumlocution strategies", async () => {
@@ -254,7 +281,7 @@ test("uses an injected fact check to retry contradictions without exposing fact 
     candidates(["사실은 안 늦었잖아", "조금 아쉬웠어", "다음엔 말해줘"]),
     candidates(["바빴구나, 다음엔 말해줘", "기다리면서 조금 아쉬웠어", "늦을 때는 미리 알려줘"]),
   ]);
-  const factValidator = vi.fn((candidate: ReplyCandidate) => !candidate.text.includes("안 늦었"));
+  const factValidator = vi.fn((candidate: ReplyCandidateContent) => !candidate.text.includes("안 늦었"));
 
   await generateReplies(command, dependencies(gateway, { factValidator }));
 

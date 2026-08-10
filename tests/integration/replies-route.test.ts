@@ -5,14 +5,15 @@ import {
   ReplyGenerationValidationError,
   type ReplyCandidate,
 } from "@/domain/replies/reply-service";
+import { NO_PERSONAL_CONTEXT_BASIS } from "@/domain/replies/reply-evidence";
 
 const roomId = "11111111-1111-4111-8111-111111111111";
 const participantId = "22222222-2222-4222-8222-222222222222";
 
 const candidates: [ReplyCandidate, ReplyCandidate, ReplyCandidate] = [
-  { strategy: "relationship_soft", text: "다음에는 미리 말해주면 좋겠어", intentLabel: "관계 유지", riskLabel: null },
-  { strategy: "emotion_signal", text: "조금 기다리면서 아쉬웠어", intentLabel: "감정 전달", riskLabel: "돌려 들릴 수 있어" },
-  { strategy: "clearer_request", text: "늦을 때는 한마디만 해줘", intentLabel: "요청", riskLabel: null },
+  { strategy: "relationship_soft", text: "다음에는 미리 말해주면 좋겠어", intentLabel: "관계 유지", riskLabel: null, contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: [] },
+  { strategy: "emotion_signal", text: "조금 기다리면서 아쉬웠어", intentLabel: "감정 전달", riskLabel: "돌려 들릴 수 있어", contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: [] },
+  { strategy: "clearer_request", text: "늦을 때는 한마디만 해줘", intentLabel: "요청", riskLabel: null, contextBasis: [NO_PERSONAL_CONTEXT_BASIS], warnings: [] },
 ];
 
 function request(body: unknown): Request {
