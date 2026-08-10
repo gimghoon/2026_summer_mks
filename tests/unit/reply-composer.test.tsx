@@ -14,9 +14,9 @@ test("uses saved indirectness and allows a one-request override", () => {
 
 test("renders exactly three returned reply cards", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ candidates: [
-    { strategy: "relationship_soft", text: "응 알겠어", intentLabel: "부드럽게", riskLabel: null },
-    { strategy: "emotion_signal", text: "음 그렇구나", intentLabel: "감정 신호", riskLabel: "눈치가 없을 수 있음" },
-    { strategy: "clearer_request", text: "다음엔 말해줘", intentLabel: "요청", riskLabel: null },
+    { strategy: "relationship_soft", text: "응 알겠어", intentLabel: "부드럽게", riskLabel: null, contextBasis: [], warnings: [] },
+    { strategy: "emotion_signal", text: "음 그렇구나", intentLabel: "감정 신호", riskLabel: "눈치가 없을 수 있음", contextBasis: [], warnings: [] },
+    { strategy: "clearer_request", text: "다음엔 말해줘", intentLabel: "요청", riskLabel: null, contextBasis: [], warnings: [] },
   ] }) }));
   render(<ReplyComposer roomId="r1" participantId="p1" />);
   fireEvent.change(screen.getByLabelText("최근 대화"), { target: { value: "민수: 미안 늦었어" } });
@@ -28,7 +28,7 @@ test("renders exactly three returned reply cards", async () => {
 
 test("sends the selected relationship as a per-request generation rule", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ candidates: [
-    { strategy: "relationship_soft", text: "a", intentLabel: "a", riskLabel: null }, { strategy: "emotion_signal", text: "b", intentLabel: "b", riskLabel: null }, { strategy: "clearer_request", text: "c", intentLabel: "c", riskLabel: null },
+    { strategy: "relationship_soft", text: "a", intentLabel: "a", riskLabel: null, contextBasis: [], warnings: [] }, { strategy: "emotion_signal", text: "b", intentLabel: "b", riskLabel: null, contextBasis: [], warnings: [] }, { strategy: "clearer_request", text: "c", intentLabel: "c", riskLabel: null, contextBasis: [], warnings: [] },
   ] }) }));
   render(<ReplyComposer roomId="r1" participantId="p1" initialRelationship="girlfriend" />);
   fireEvent.change(screen.getByLabelText("최근 대화"), { target: { value: "대화" } }); fireEvent.change(screen.getByLabelText("현재 상황"), { target: { value: "상황" } }); fireEvent.click(screen.getByRole("button", { name: "답장 3개 만들기" }));
@@ -40,7 +40,7 @@ test("sends the selected relationship as a per-request generation rule", async (
 test("sends the saved browser intensity even without a one-request override", async () => {
   window.localStorage.setItem("reply-default-indirectness", "4");
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ candidates: [
-    { strategy: "relationship_soft", text: "a", intentLabel: "a", riskLabel: null }, { strategy: "emotion_signal", text: "b", intentLabel: "b", riskLabel: null }, { strategy: "clearer_request", text: "c", intentLabel: "c", riskLabel: null },
+    { strategy: "relationship_soft", text: "a", intentLabel: "a", riskLabel: null, contextBasis: [], warnings: [] }, { strategy: "emotion_signal", text: "b", intentLabel: "b", riskLabel: null, contextBasis: [], warnings: [] }, { strategy: "clearer_request", text: "c", intentLabel: "c", riskLabel: null, contextBasis: [], warnings: [] },
   ] }) }));
   render(<ReplyComposer roomId="r1" participantId="p1" />);
   fireEvent.change(screen.getByLabelText("최근 대화"), { target: { value: "대화" } }); fireEvent.change(screen.getByLabelText("현재 상황"), { target: { value: "상황" } }); fireEvent.click(screen.getByRole("button", { name: "답장 3개 만들기" }));
@@ -51,7 +51,7 @@ test("sends the saved browser intensity even without a one-request override", as
 
 test("allows a one-request creative intensity of seven", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ candidates: [
-    { strategy: "relationship_soft", text: "a", intentLabel: "a", riskLabel: null }, { strategy: "emotion_signal", text: "b", intentLabel: "b", riskLabel: null }, { strategy: "clearer_request", text: "c", intentLabel: "c", riskLabel: null },
+    { strategy: "relationship_soft", text: "a", intentLabel: "a", riskLabel: null, contextBasis: [], warnings: [] }, { strategy: "emotion_signal", text: "b", intentLabel: "b", riskLabel: null, contextBasis: [], warnings: [] }, { strategy: "clearer_request", text: "c", intentLabel: "c", riskLabel: null, contextBasis: [], warnings: [] },
   ] }) }));
   render(<ReplyComposer roomId="r1" participantId="p1" />);
   const slider = screen.getByRole("slider", { name: "여자어 강도" });
