@@ -40,6 +40,19 @@ function normalizedName(name: string): string {
   return name.normalize("NFKC").trim().toLocaleLowerCase();
 }
 
+const participantNameSuffixes = new Set([
+  "", "은", "는", "이", "가", "을", "를", "에게", "한테", "와", "과", "의", "도", "님", "아", "야",
+]);
+
+function mentionsParticipantName(framing: string, participantName: string): boolean {
+  const name = participantName.replace(/\s+/gu, "");
+  if (name.length < 2) return false;
+  const tokens = framing.match(/[가-힣A-Za-z0-9]+/gu) ?? [];
+  return tokens.some((token) => (
+    token.startsWith(name) && participantNameSuffixes.has(token.slice(name.length))
+  ));
+}
+
 function hasExplicitParticipantReference(
   command: Pick<GenerateRepliesCommand, "situation" | "intent">,
   participants: ProductionRoomParticipant[],
@@ -47,7 +60,7 @@ function hasExplicitParticipantReference(
   const framing = normalizedName(`${command.situation}\n${command.intent}`);
   return participants.some((participant) => {
     const name = normalizedName(participant.name);
-    return name.length >= 2 && framing.includes(name);
+    return mentionsParticipantName(framing, name);
   });
 }
 

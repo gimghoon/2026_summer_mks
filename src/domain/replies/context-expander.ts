@@ -70,7 +70,8 @@ function recentTextTurns(turns: DecryptedTurn[]): DecryptedTurn[] {
 function hasUnresolvedReference(turns: DecryptedTurn[], resolvedPersonReference: boolean): boolean {
   return recentTextTurns(turns).some((turn) => turn.messages.some((message) => {
     if (message.kind !== "text") return false;
-    const tokens = message.text.match(/[가-힣A-Za-z0-9]+/g) ?? [];
+    const normalizedText = message.text.replace(/그\s+(사람|분)/gu, "그$1");
+    const tokens = normalizedText.match(/[가-힣A-Za-z0-9]+/g) ?? [];
     return tokens.some((token) => isUnresolvedReferenceToken(token, resolvedPersonReference));
   }));
 }

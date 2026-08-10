@@ -103,6 +103,21 @@ test("accepts a resolved recent person reference", async () => {
   expect(result.needsUserQuestion).toBe(false);
 });
 
+test("accepts a resolved spaced person reference", async () => {
+  const judge = vi.fn().mockResolvedValue({ sufficient: true, ambiguityReasons: [] });
+  const turns = makeTurns(20, "그 사람은 아직 예약할 돈을 보내지 않고 있어서 기다리는 중이야");
+
+  const result = await selectCurrentContext({
+    turns,
+    judge,
+    fullChunkStart: 0,
+    resolvedPersonReference: true,
+  });
+
+  expect(judge).toHaveBeenCalledOnce();
+  expect(result.needsUserQuestion).toBe(false);
+});
+
 test("does not treat an explicit person as resolving a recent object reference", async () => {
   const judge = vi.fn().mockResolvedValue({ sufficient: true, ambiguityReasons: [] });
   const turns = makeTurns(20, "그거 어떻게 할지 오늘 예약 전에 빨리 알려줘");

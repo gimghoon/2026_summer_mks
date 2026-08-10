@@ -154,3 +154,28 @@ test("does not resolve a recent person reference with a name outside the room", 
 
   expect(context.currentContext.needsUserQuestion).toBe(true);
 });
+
+test("does not resolve a person reference from an unrelated Korean counter word", async () => {
+  const counterCommand: GenerateRepliesCommand = {
+    ...command,
+    pastedConversation: "민수: 걔는 아직 돈 안 보냈어\n나: 이따 예약해야 해",
+    situation: "할 일이 하나만 남았다",
+    intent: "예약 전에 돈을 보내 달라고 말한다",
+  };
+  const counterSnapshot: ProductionContextSnapshot = {
+    ...snapshot,
+    roomParticipants: [
+      ...snapshot.roomParticipants,
+      { id: "person-hana", name: "하나", isSelf: false },
+    ],
+  };
+
+  const context = await buildProductionReplyContext(
+    counterCommand,
+    "female_friend",
+    new RecordingGateway(),
+    counterSnapshot,
+  );
+
+  expect(context.currentContext.needsUserQuestion).toBe(true);
+});
