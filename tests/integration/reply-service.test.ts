@@ -92,6 +92,28 @@ const protectedAllocationCommand: GenerateRepliesCommand = {
   intent: "공동 비용은 걷고 개인 쇼핑은 각자 내자고 말하고 싶어",
 };
 
+const newlyProtectedMoneyIntents = [
+  "돈 좀 보내줘",
+  "이번 송금을 수락하고 싶어",
+  "내일 갚겠다고 말하고 싶어",
+  "이번에는 내가 결제할게",
+  "돈은 내가 받을게",
+] as const;
+
+const clearNaturalMoneyDecisions = [
+  ["돈 좀 보내줘", "돈 좀 보내줘"],
+  ["이번 송금을 수락하고 싶어", "이번 송금은 내가 받을게"],
+  ["내일 갚겠다고 말하고 싶어", "내일 내가 갚을게"],
+  ["이번에는 내가 결제할게", "이번에는 내가 결제할게"],
+  ["돈은 내가 받을게", "돈은 내가 받을게"],
+] as const;
+
+const vagueMoneyResponse = candidates([
+  "이번에는 조금 생각해볼게",
+  "조금 고민되기는 하네",
+  "나중에 다시 이야기하자",
+]);
+
 test("returns exactly three candidates in the required strategy order", async () => {
   const gateway = new FakeGateway([candidates([
     "바빴구나, 다음엔 한마디만 해주면 좋을 것 같아",
@@ -221,6 +243,80 @@ test("level five retries once and rejects the same content violations with opaqu
     "FACT_CONTRADICTION",
     "EXPLICIT_INTENT_AMBIGUOUS",
   ]);
+});
+
+test.each(newlyProtectedMoneyIntents)(
+  "level five keeps a natural money decision strict: %s",
+  async (intent) => {
+    const gateway = new FakeGateway([vagueMoneyResponse, vagueMoneyResponse]);
+
+    await expect(generateReplies(
+      { ...command, intent, indirectness: 5 },
+      dependencies(gateway),
+    )).rejects.toMatchObject({
+      ruleIds: ["EXPLICIT_INTENT_AMBIGUOUS"],
+    });
+    expect(gateway.requests).toHaveLength(2);
+    expect(JSON.parse(gateway.requests[1]!.input).validationRuleIds).toEqual([
+      "EXPLICIT_INTENT_AMBIGUOUS",
+    ]);
+  },
+);
+
+test.each(newlyProtectedMoneyIntents)(
+  "level seven warns for an ambiguous natural money decision without retrying: %s",
+  async (intent) => {
+    const gateway = new FakeGateway([vagueMoneyResponse]);
+
+    const result = await generateReplies(
+      { ...command, intent, indirectness: 7 },
+      dependencies(gateway),
+    );
+
+    expect(result.kind).toBe("replies");
+    if (result.kind !== "replies") return;
+    expect(gateway.requests).toHaveLength(1);
+    for (const candidate of result.candidates) {
+      expect(candidate.warnings).toEqual([
+        "emotional_inference",
+        "important_intent_ambiguity",
+      ]);
+    }
+  },
+);
+
+test.each(clearNaturalMoneyDecisions)(
+  "level five accepts an explicit natural money decision without retrying: %s",
+  async (intent, explicitReply) => {
+    const clearResponse = candidates([
+      explicitReply,
+      `확실히 말할게, ${explicitReply}`,
+      `${explicitReply}라고 전할게`,
+    ]);
+    const gateway = new FakeGateway([clearResponse, clearResponse]);
+
+    await expect(generateReplies(
+      { ...command, intent, indirectness: 5 },
+      dependencies(gateway),
+    )).resolves.toMatchObject({ kind: "replies" });
+    expect(gateway.requests).toHaveLength(1);
+  },
+);
+
+test("level five does not confuse a non-financial send with an explicit money decision", async () => {
+  const nonFinancialSend = candidates([
+    "답장은 내가 보낼게",
+    "메시지는 내가 보낼게",
+    "사진은 내가 보낼게",
+  ]);
+  const gateway = new FakeGateway([nonFinancialSend, nonFinancialSend]);
+
+  await expect(generateReplies(
+    { ...command, intent: "돈은 내가 받을게", indirectness: 5 },
+    dependencies(gateway),
+  )).rejects.toMatchObject({
+    ruleIds: ["EXPLICIT_INTENT_AMBIGUOUS"],
+  });
 });
 
 test("uses an OpenAI-compatible homogeneous array schema for three candidates", async () => {

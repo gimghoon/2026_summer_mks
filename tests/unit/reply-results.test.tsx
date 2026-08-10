@@ -22,7 +22,9 @@ test("renders verified context basis and advisory warnings", () => {
   expect(screen.getByText("말투: 짧은 문장을 자주 사용함")).toBeVisible();
   expect(screen.getByText("감정 해석 포함")).toBeVisible();
   expect(screen.getByText("평소 말투와 다를 수 있음")).toBeVisible();
-  expect(screen.getByText(/보내기 전에 실제 의도와 맞는지 확인/)).toBeVisible();
+  expect(screen.getByText(
+    "감정과 뉘앙스를 창의적으로 해석한 표현이에요. 보내기 전에 실제 의도와 맞는지 확인해 주세요.",
+  )).toBeVisible();
 });
 
 test("limits context basis and deduplicates warning badges", () => {

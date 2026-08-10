@@ -36,19 +36,22 @@ test("completed payment praise is not forced to remain explicit", () => {
   expect(policy.mustRemainExplicit).toBe(false);
 });
 
-test("입금해 줘서 praise is not forced to remain explicit", () => {
-  const policy = buildStylePolicy({
-    relationship: "female_friend",
-    indirectness: 7,
-    intent: "입금해 줘서 고마워, 정말 잘했어",
-  });
-
+test.each([
+  "입금해 줘서 고마워, 정말 잘했어",
+  "돈 보내줘서 고마워",
+])("completed-payment praise is not forced to remain explicit: %s", (intent) => {
+  const policy = buildStylePolicy({ relationship: "female_friend", indirectness: 7, intent });
   expect(policy.mustRemainExplicit).toBe(false);
 });
 
 test.each([
   "돈을 보내 달라고 요청하고 싶어",
   "오늘 중으로 입금해 줘",
+  "돈 좀 보내줘",
+  "이번 송금을 수락하고 싶어",
+  "내일 갚겠다고 말하고 싶어",
+  "이번에는 내가 결제할게",
+  "돈은 내가 받을게",
   "이번 송금은 거절하고 싶어",
   "금액을 확인하고 입금하겠다고 말하고 싶어",
   "공동 비용은 걷고 개인 쇼핑은 각자 내자고 말하고 싶어",
