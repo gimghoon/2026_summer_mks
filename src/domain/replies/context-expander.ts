@@ -25,11 +25,14 @@ export type ContextExpansionInput = {
   turns: DecryptedTurn[];
   fullChunkStart: number;
   judge: (turns: DecryptedTurn[]) => Promise<ContextSufficiency>;
+  resolvedPersonReference?: boolean;
 };
 
 const unresolvedReferenceStems = [
   "그", "그거", "그것", "그사람", "그분", "걔", "그때", "그일", "그얘기", "저거", "저것", "이거", "이것",
 ] as const;
+
+const personReferenceStems = new Set(["그사람", "그분", "걔"]);
 
 // Match only common particles and copula endings after known reference stems.
 // This deliberately does not turn arbitrary 그-prefix words (for example, 그래서)
@@ -39,9 +42,11 @@ const referenceSuffixes = new Set([
   "야", "이다", "이야", "예요", "이에요", "인가", "일까", "였어", "였나",
 ]);
 
-function isUnresolvedReferenceToken(token: string): boolean {
+function isUnresolvedReferenceToken(token: string, resolvedPersonReference: boolean): boolean {
   return unresolvedReferenceStems.some((stem) => (
-    token.startsWith(stem) && referenceSuffixes.has(token.slice(stem.length))
+    token.startsWith(stem)
+    && referenceSuffixes.has(token.slice(stem.length))
+    && !(resolvedPersonReference && personReferenceStems.has(stem))
   ));
 }
 
@@ -58,21 +63,25 @@ function isEventOrLaughterOnly(turn: DecryptedTurn): boolean {
   ));
 }
 
-function hasUnresolvedReference(turns: DecryptedTurn[]): boolean {
-  return turns.some((turn) => turn.messages.some((message) => {
+function recentTextTurns(turns: DecryptedTurn[]): DecryptedTurn[] {
+  return turns.filter((turn) => turn.messages.some((message) => message.kind === "text")).slice(-3);
+}
+
+function hasUnresolvedReference(turns: DecryptedTurn[], resolvedPersonReference: boolean): boolean {
+  return recentTextTurns(turns).some((turn) => turn.messages.some((message) => {
     if (message.kind !== "text") return false;
     const tokens = message.text.match(/[가-힣A-Za-z0-9]+/g) ?? [];
-    return tokens.some(isUnresolvedReferenceToken);
+    return tokens.some((token) => isUnresolvedReferenceToken(token, resolvedPersonReference));
   }));
 }
 
-function deterministicAmbiguity(turns: DecryptedTurn[]): AmbiguityReason[] {
+function deterministicAmbiguity(turns: DecryptedTurn[], resolvedPersonReference: boolean): AmbiguityReason[] {
   const reasons: AmbiguityReason[] = [];
   if (lexicalTokens(turns).length < 6) reasons.push("low_information");
   if (turns.length > 0 && turns.filter(isEventOrLaughterOnly).length / turns.length > 0.7) {
     reasons.push("emotion_ambiguous");
   }
-  if (hasUnresolvedReference(turns)) reasons.push("unclear_reference");
+  if (hasUnresolvedReference(turns, resolvedPersonReference)) reasons.push("unclear_reference");
   return reasons;
 }
 
@@ -123,7 +132,7 @@ export async function selectCurrentContext(input: ContextExpansionInput): Promis
     if (previousTurns && sameTurnIds(previousTurns, turns)) continue;
     previousTurns = turns;
 
-    const deterministicReasons = deterministicAmbiguity(turns);
+    const deterministicReasons = deterministicAmbiguity(turns, input.resolvedPersonReference ?? false);
     if (deterministicReasons.length > 0) {
       latestReasons = deterministicReasons;
       continue;
