@@ -68,6 +68,23 @@ test("returns no chunks for no turns", () => {
   expect(chunkTurns([], [])).toEqual([]);
 });
 
+test("caps a continuous conversation at twenty turns per chunk", () => {
+  const turns = Array.from({ length: 136 }, (_, index) => {
+    const at = new Date(BASE_TIME + index * 60_000);
+    return {
+      speaker: `speaker-${index % 2}`,
+      startedAt: at,
+      endedAt: at,
+      messages: [],
+    } satisfies ParsedTurn;
+  });
+
+  const result = chunkTurns(turns, []);
+
+  expect(result.map((chunk) => chunk.endTurnIndex - chunk.startTurnIndex + 1))
+    .toEqual([20, 20, 20, 20, 20, 20, 16]);
+});
+
 test.each([
   { label: "not integers", boundaries: [1.5] },
   { label: "outside the turn range", boundaries: [2] },

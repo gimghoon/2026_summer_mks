@@ -1,6 +1,7 @@
 import type { ParsedTurn } from "@/domain/kakao/turns";
 
 const THIRTY_MINUTES_MS = 30 * 60 * 1_000;
+const MAX_TURNS_PER_CHUNK = 20;
 const SEOUL_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Seoul",
   year: "numeric",
@@ -60,8 +61,10 @@ export function chunkTurns(turns: ParsedTurn[], topicBoundaries: number[]): Conv
     const previous = turns[index - 1]!;
     const current = turns[index]!;
     const gap = current.startedAt.getTime() - previous.endedAt.getTime();
+    const reachedTurnLimit = index - chunkStart >= MAX_TURNS_PER_CHUNK;
     const startsNewChunk =
-      gap >= THIRTY_MINUTES_MS
+      reachedTurnLimit
+      || gap >= THIRTY_MINUTES_MS
       || seoulCalendarDate(previous.endedAt) !== seoulCalendarDate(current.startedAt)
       || boundaries.has(index);
 
