@@ -34,7 +34,7 @@ class MemoryChunks implements ChunkReconciliationRepository {
 }
 
 function turn(id: string, minute: number) {
-  const at = new Date(`2026-08-07T00:${String(minute).padStart(2, "0")}:00.000Z`);
+  const at = new Date(Date.UTC(2026, 7, 7, 0, minute));
   return { id, startedAt: at, endedAt: at };
 }
 
@@ -78,4 +78,54 @@ test("appending inside a partition reuses its ID and preserves prior analysis li
   expect(repository.chunks[0]).toMatchObject({ id: stableChunkId, startTurnId: "turn-1", endTurnId: "turn-2" });
   expect(decryptJson<{ analysisKey: string }>(repository.chunks[0]!.encryptedSummary).analysisKey).toBe("analysis-old");
   expect(chunksCoverTurnsExactlyOnce(turns, [...repository.chunks, repository.chunks[0]!])).toBe(false);
+});
+
+test("replaces an oversized legacy partition with bounded partitions while retaining its analysis lineage", async () => {
+  const repository = new MemoryChunks();
+  const turns = [
+    turn("turn-1", 0),
+    turn("turn-2", 1),
+    ...Array.from({ length: 45 }, (_, index) => turn(`turn-${index + 3}`, index + 40)),
+  ];
+  const stableChunkId = "stable-chunk";
+  repository.chunks = [
+    {
+      id: stableChunkId,
+      startTurnId: "turn-1",
+      endTurnId: "turn-2",
+      startedAt: turns[0]!.startedAt,
+      endedAt: turns[1]!.endedAt,
+      encryptedSummary: encryptJson({ analysisComplete: false }),
+    },
+    {
+      id: "legacy-large-chunk",
+      startTurnId: "turn-3",
+      endTurnId: "turn-47",
+      startedAt: turns[2]!.startedAt,
+      endedAt: turns[46]!.endedAt,
+      encryptedSummary: encryptJson({
+        summary: "old large partition",
+        sourceFingerprint: "old-large-fingerprint",
+        analysisKey: "analysis-old-large",
+        analysisComplete: true,
+      }),
+    },
+  ];
+
+  await reconcileRoomChunks("room-1", turns, repository);
+
+  expect(repository.chunks).toHaveLength(4);
+  expect(repository.chunks.some((chunk) => chunk.id === stableChunkId)).toBe(true);
+  expect(chunksCoverTurnsExactlyOnce(turns, repository.chunks)).toBe(true);
+
+  const indexes = new Map(turns.map((item, index) => [item.id, index]));
+  expect(repository.chunks.every((chunk) => (
+    indexes.get(chunk.endTurnId)! - indexes.get(chunk.startTurnId)! + 1 <= 20
+  ))).toBe(true);
+
+  expect(repository.chunks.some((chunk) => {
+    const payload = decryptJson<{ analysisKey?: string; previousAnalysisKeys?: string[] }>(chunk.encryptedSummary);
+    return payload.analysisKey === "analysis-old-large"
+      || payload.previousAnalysisKeys?.includes("analysis-old-large");
+  })).toBe(true);
 });
