@@ -69,6 +69,26 @@ test("returns exactly three candidates and uses the saved default indirectness",
   }));
 });
 
+test.each([6, 7] as const)("accepts indirectness level %s", async (indirectness) => {
+  const deps = dependencies();
+  const response = await createReplyPostHandler(deps)(request(validBody({ indirectness })));
+
+  expect(response.status).toBe(200);
+  expect(deps.generate).toHaveBeenCalledWith(
+    expect.objectContaining({ indirectness }),
+    "female_friend",
+  );
+});
+
+test("rejects an indirectness level above seven", async () => {
+  const deps = dependencies();
+  const response = await createReplyPostHandler(deps)(request(validBody({ indirectness: 8 })));
+
+  expect(response.status).toBe(400);
+  expect(deps.generate).not.toHaveBeenCalled();
+  expect(deps.persist).not.toHaveBeenCalled();
+});
+
 test("uses an explicit per-request relationship override for policy generation and persistence", async () => {
   const deps = dependencies();
   const handler = createReplyPostHandler(deps);

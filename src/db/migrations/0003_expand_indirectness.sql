@@ -1,0 +1,2 @@
+ALTER TABLE "reply_requests" DROP CONSTRAINT "reply_requests_indirectness_check";--> statement-breakpoint
+ALTER TABLE "reply_requests" ADD CONSTRAINT "reply_requests_indirectness_check" CHECK ("reply_requests"."indirectness" between 1 and 7);

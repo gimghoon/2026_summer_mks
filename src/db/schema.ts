@@ -169,7 +169,7 @@ export const replyRequests = pgTable(
     createdAt: createdAt(),
   },
   (table) => [
-    check("reply_requests_indirectness_check", sql`${table.indirectness} between 1 and 5`),
+    check("reply_requests_indirectness_check", sql`${table.indirectness} between 1 and 7`),
   ],
 );
 

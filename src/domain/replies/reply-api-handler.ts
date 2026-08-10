@@ -20,7 +20,7 @@ const replyBodySchema = z.object({
   pastedConversation: z.string().min(1).max(MAX_PASTED_CONVERSATION_CHARACTERS),
   situation: z.string().trim().min(1).max(2_000),
   intent: z.string().trim().min(1).max(1_000),
-  indirectness: z.number().int().min(1).max(5).optional(),
+  indirectness: z.number().int().min(1).max(7).optional(),
   relationship: z.enum(["female_friend", "girlfriend"]).optional(),
 }).strict();
 

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 import { getTableColumns, getTableName } from "drizzle-orm";
 import { getTableConfig } from "drizzle-orm/pg-core";
@@ -124,4 +124,21 @@ test("registers the constrained room analysis progress migration", () => {
   expect(migration).toMatch(/"?completed_chunks"? >= 0/i);
   expect(migration).toMatch(/"?completed_chunks"? <= (?:"room_analysis_runs"\.)?"?total_chunks"?/i);
   expect(journal.entries).toContainEqual(expect.objectContaining({ tag: "0002_room_analysis_runs" }));
+});
+
+test("expands the stored reply indirectness constraint through level seven", () => {
+  const schema = readFileSync("src/db/schema.ts", "utf8");
+  const migrationPath = "src/db/migrations/0003_expand_indirectness.sql";
+
+  expect(schema).toMatch(/reply_requests_indirectness_check[\s\S]*between 1 and 7/iu);
+  expect(existsSync(migrationPath)).toBe(true);
+  if (!existsSync(migrationPath)) return;
+
+  const migration = readFileSync(migrationPath, "utf8");
+  const journal = JSON.parse(readFileSync("src/db/migrations/meta/_journal.json", "utf8")) as {
+    entries: Array<{ tag: string }>;
+  };
+  expect(migration).toMatch(/DROP CONSTRAINT "reply_requests_indirectness_check"/iu);
+  expect(migration).toMatch(/ADD CONSTRAINT "reply_requests_indirectness_check" CHECK \("reply_requests"\."indirectness" between 1 and 7\)/iu);
+  expect(journal.entries).toContainEqual(expect.objectContaining({ tag: "0003_expand_indirectness" }));
 });
