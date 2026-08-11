@@ -10,6 +10,14 @@ import {
   buildPersonalContextEvidence,
   resolveContextBasis,
 } from "@/domain/replies/reply-evidence";
+import {
+  invalidRequiredBasisIds,
+  PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE,
+  selectRequiredPersonalContext,
+} from "@/domain/replies/required-personal-context";
+import {
+  type PersonalContextUsageValidator,
+} from "@/domain/replies/personal-context-usage-validator";
 import { protectedIntentKind } from "@/domain/replies/protected-intent";
 import {
   buildStylePolicy,
@@ -33,7 +41,8 @@ export type ReplyWarning =
   | "personal_style_mismatch"
   | "specific_fact_inference"
   | "profile_conflict"
-  | "important_intent_ambiguity";
+  | "important_intent_ambiguity"
+  | "unverified_profile_context";
 
 export type ReplyCandidateContent = {
   strategy: ReplyStrategy;
@@ -49,6 +58,7 @@ export type ReplyCandidate = ReplyCandidateContent & {
 
 export type ReplyGenerationResult =
   | { kind: "clarification_required"; question: string }
+  | { kind: "personal_context_unavailable"; message: string }
   | { kind: "replies"; candidates: [ReplyCandidate, ReplyCandidate, ReplyCandidate] };
 
 export type GenerateRepliesCommand = {
@@ -102,6 +112,7 @@ export type ReplyServiceDependencies = {
   gateway: ModelGateway;
   contextProvider: ReplyContextProvider;
   factValidator: ReplyFactValidator;
+  personalContextUsageValidator: PersonalContextUsageValidator;
 };
 
 export type ReplyValidationRuleId =
@@ -112,11 +123,18 @@ export type ReplyValidationRuleId =
   | "UNSUPPORTED_PERSONAL_DEVICE"
   | "UNSUPPORTED_SPECIFIC_FACT"
   | "FACT_CONTRADICTION"
-  | "EXPLICIT_INTENT_AMBIGUOUS";
+  | "EXPLICIT_INTENT_AMBIGUOUS"
+  | "REQUIRED_PERSONAL_CONTEXT_MISSING"
+  | "PERSONAL_CONTEXT_NOT_REFLECTED";
 
-export type ReplyContentValidationRuleId = Exclude<ReplyValidationRuleId, "OUTPUT_STRUCTURE">;
+export type ReplyAdvisoryValidationRuleId = Exclude<
+  ReplyValidationRuleId,
+  | "OUTPUT_STRUCTURE"
+  | "REQUIRED_PERSONAL_CONTEXT_MISSING"
+  | "PERSONAL_CONTEXT_NOT_REFLECTED"
+>;
 
-export type CandidateValidationResult = { ruleIds: ReplyValidationRuleId[] };
+export type CandidateValidationResult = { ruleIds: ReplyAdvisoryValidationRuleId[] };
 
 const warningByRule = {
   DUPLICATE_TEXT: "duplicate_text",
@@ -126,18 +144,15 @@ const warningByRule = {
   UNSUPPORTED_SPECIFIC_FACT: "specific_fact_inference",
   FACT_CONTRADICTION: "profile_conflict",
   EXPLICIT_INTENT_AMBIGUOUS: "important_intent_ambiguity",
-} as const satisfies Record<ReplyContentValidationRuleId, ReplyWarning>;
+} as const satisfies Record<ReplyAdvisoryValidationRuleId, ReplyWarning>;
 
-const contentRuleOrder = Object.keys(warningByRule) as ReplyContentValidationRuleId[];
+const contentRuleOrder = Object.keys(warningByRule) as ReplyAdvisoryValidationRuleId[];
 
-export function warningForRule(ruleId: ReplyValidationRuleId): ReplyWarning {
-  if (ruleId === "OUTPUT_STRUCTURE") {
-    throw new Error("OUTPUT_STRUCTURE is not an advisory content warning");
-  }
+export function warningForRule(ruleId: ReplyAdvisoryValidationRuleId): ReplyWarning {
   return warningByRule[ruleId];
 }
 
-function flattenValidationRuleIds(results: CandidateValidationResult[]): ReplyContentValidationRuleId[] {
+function flattenValidationRuleIds(results: CandidateValidationResult[]): ReplyAdvisoryValidationRuleId[] {
   const found = new Set(results.flatMap((result) => result.ruleIds));
   return contentRuleOrder.filter((ruleId) => found.has(ruleId));
 }
@@ -321,7 +336,11 @@ function preservesExplicitIntent(intent: string, text: string): boolean {
   }
 }
 
-function modelContext(context: ReplyGenerationContext) {
+function modelContext(
+  context: ReplyGenerationContext,
+  participantProfiles: ParticipantProfileContext[],
+  currentFacts: string[] = context.currentFacts ?? [],
+) {
   return {
     currentTurns: context.currentContext.turns.map((turn) => ({
       speakerId: turn.speakerId,
@@ -337,8 +356,8 @@ function modelContext(context: ReplyGenerationContext) {
       })),
     })),
     roomMemory: context.roomMemory,
-    participantProfiles: context.participantProfiles,
-    currentFacts: context.currentFacts ?? [],
+    participantProfiles,
+    currentFacts,
   };
 }
 
@@ -352,7 +371,7 @@ function creativeIndirectnessGuidance(level: IndirectnessLevel): string {
   return "";
 }
 
-function generationSystem(policy: StylePolicy): string {
+function generationSystem(policy: StylePolicy, requiresPersonalContext: boolean): string {
   return [
     "Generate exactly three concise Korean KakaoTalk reply candidates.",
     "The user explicitly selected a Korean-women-in-their-20s '여자어' concept: treat it as an opt-in writing style, never as a fact about all women.",
@@ -365,6 +384,9 @@ function generationSystem(policy: StylePolicy): string {
     creativeIndirectnessGuidance(policy.indirectness),
     "Personal device mapping: laughter=ㅋㅋ/ㅎㅎ, vowel_repetition=repeated Korean vowels, tilde=~, emoji=emoji. Use a personal device only if its key is listed in Policy.allowedDevices.",
     `Policy: ${JSON.stringify(policy)}`,
+    requiresPersonalContext
+      ? "For every candidate, choose at least one supplied personalContextEvidence ID and naturally apply that fact; put the chosen IDs in contextBasisIds."
+      : "",
     "On a retry, validationRuleIds are opaque rule identifiers. Correct those rules without quoting or discussing the previous text.",
   ].join(" ");
 }
@@ -383,7 +405,7 @@ async function validateCandidates(
   const knownTexts = contextTexts(command, context);
   const results: CandidateValidationResult[] = [];
   for (const [index, candidate] of candidates.entries()) {
-    const errors = new Set<ReplyContentValidationRuleId>();
+    const errors = new Set<ReplyAdvisoryValidationRuleId>();
     if ((normalizedCounts.get(normalized[index]!) ?? 0) > 1) errors.add("DUPLICATE_TEXT");
     const forbidden = includesForbiddenCue(candidate.text, policy);
     if (forbidden.relationship) errors.add("RELATIONSHIP_FORBIDDEN_CUE");
@@ -412,11 +434,57 @@ function withPublicCandidateMetadata(
   };
 }
 
+function semanticUsageCandidates(
+  candidates: [
+    GeneratedReply["candidates"][number],
+    GeneratedReply["candidates"][number],
+    GeneratedReply["candidates"][number],
+  ],
+  allowedProfiles: ParticipantProfileContext[],
+) {
+  const profilesById = new Map(allowedProfiles.map((profile) => [profile.id, profile]));
+  return candidates.map((candidate) => ({
+    strategy: candidate.strategy,
+    text: candidate.text,
+    selectedFacts: candidate.contextBasisIds.flatMap((id) => {
+      const profile = profilesById.get(id);
+      return profile ? [{
+        id: profile.id,
+        kind: profile.kind,
+        value: profile.value,
+        conditions: profile.conditions ?? [],
+        exceptions: profile.exceptions ?? [],
+      }] : [];
+    }),
+  })) as Parameters<PersonalContextUsageValidator>[0];
+}
+
+function unverifiedProfileWarning(
+  candidate: GeneratedReply["candidates"][number],
+  inferenceOnly: boolean,
+  allowedProfiles: ParticipantProfileContext[],
+): ReplyWarning[] {
+  if (!inferenceOnly) return [];
+  const selectedIds = new Set(candidate.contextBasisIds);
+  return allowedProfiles.some((profile) => (
+    selectedIds.has(profile.id) && profile.source === "ai_inference"
+  )) ? ["unverified_profile_context"] : [];
+}
+
 export class ReplyService {
   constructor(private readonly dependencies: ReplyServiceDependencies) {}
 
   async generateReplies(command: GenerateRepliesCommand): Promise<ReplyGenerationResult> {
-    const context = await this.dependencies.contextProvider.load(command);
+    const preloadedProfiles = command.personalContextMode === "required"
+      ? await this.dependencies.contextProvider.loadParticipantProfiles(command)
+      : undefined;
+    const requiredSelection = preloadedProfiles
+      ? selectRequiredPersonalContext(preloadedProfiles)
+      : null;
+    if (requiredSelection && requiredSelection.facts.length === 0) {
+      return { kind: "personal_context_unavailable", message: PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE };
+    }
+    const context = await this.dependencies.contextProvider.load(command, preloadedProfiles);
     if (context.currentContext.needsUserQuestion) {
       return {
         kind: "clarification_required",
@@ -425,9 +493,10 @@ export class ReplyService {
       };
     }
 
+    const evidenceProfiles = requiredSelection?.facts ?? context.participantProfiles;
     const memoryTexts = [
       context.roomMemory ?? "",
-      ...context.participantProfiles.flatMap((profile) => [
+      ...evidenceProfiles.flatMap((profile) => [
         profile.value,
         ...(profile.conditions ?? []),
         ...(profile.exceptions ?? []),
@@ -439,7 +508,8 @@ export class ReplyService {
       intent: command.intent,
       supportedDevices: supportedPersonalStyleDevices(memoryTexts),
     });
-    const personalContextEvidence = buildPersonalContextEvidence(context.participantProfiles);
+    const personalContextEvidence = buildPersonalContextEvidence(evidenceProfiles);
+    const allowedFactIds = new Set(evidenceProfiles.map((profile) => profile.id));
     let validationRuleIds: ReplyValidationRuleId[] = [];
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -449,13 +519,17 @@ export class ReplyService {
           purpose: "reply",
           schemaName: "woman_speech_reply_candidates",
           schema: generatedReplySchema,
-          system: generationSystem(policy),
+          system: generationSystem(policy, command.personalContextMode === "required"),
           input: JSON.stringify({
             situation: command.situation,
             intent: command.intent,
             indirectness: command.indirectness,
             relationship: context.relationship,
-            context: modelContext(context),
+            context: modelContext(
+              context,
+              evidenceProfiles,
+              requiredSelection ? [] : context.currentFacts ?? [],
+            ),
             personalContextEvidence,
             validationRuleIds,
           }),
@@ -485,22 +559,56 @@ export class ReplyService {
         policy,
         this.dependencies.factValidator,
       );
+      if (command.personalContextMode === "required") {
+        const hasInvalidBasis = generated.candidates.some((candidate) => (
+          invalidRequiredBasisIds(candidate.contextBasisIds, allowedFactIds)
+        ));
+        if (hasInvalidBasis) {
+          validationRuleIds = ["REQUIRED_PERSONAL_CONTEXT_MISSING"];
+          if (attempt === 0) continue;
+          throw new ReplyGenerationValidationError(validationRuleIds);
+        }
+        const reflected = await this.dependencies.personalContextUsageValidator(
+          semanticUsageCandidates([
+            generated.candidates[0]!,
+            generated.candidates[1]!,
+            generated.candidates[2]!,
+          ], evidenceProfiles),
+        );
+        if (generated.candidates.some((candidate) => !reflected[candidate.strategy])) {
+          validationRuleIds = ["PERSONAL_CONTEXT_NOT_REFLECTED"];
+          if (attempt === 0) continue;
+          throw new ReplyGenerationValidationError(validationRuleIds);
+        }
+      }
       if (command.indirectness >= 6) {
         const candidates: [ReplyCandidate, ReplyCandidate, ReplyCandidate] = [
           withPublicCandidateMetadata(
             generated.candidates[0]!,
             personalContextEvidence,
-            ["emotional_inference", ...candidateValidationResults[0]!.ruleIds.map(warningForRule)],
+            [
+              "emotional_inference",
+              ...candidateValidationResults[0]!.ruleIds.map(warningForRule),
+              ...unverifiedProfileWarning(generated.candidates[0]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+            ],
           ),
           withPublicCandidateMetadata(
             generated.candidates[1]!,
             personalContextEvidence,
-            ["emotional_inference", ...candidateValidationResults[1]!.ruleIds.map(warningForRule)],
+            [
+              "emotional_inference",
+              ...candidateValidationResults[1]!.ruleIds.map(warningForRule),
+              ...unverifiedProfileWarning(generated.candidates[1]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+            ],
           ),
           withPublicCandidateMetadata(
             generated.candidates[2]!,
             personalContextEvidence,
-            ["emotional_inference", ...candidateValidationResults[2]!.ruleIds.map(warningForRule)],
+            [
+              "emotional_inference",
+              ...candidateValidationResults[2]!.ruleIds.map(warningForRule),
+              ...unverifiedProfileWarning(generated.candidates[2]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+            ],
           ),
         ];
         return { kind: "replies", candidates };
@@ -508,9 +616,21 @@ export class ReplyService {
       validationRuleIds = flattenValidationRuleIds(candidateValidationResults);
       if (validationRuleIds.length === 0) {
         const candidates: [ReplyCandidate, ReplyCandidate, ReplyCandidate] = [
-          withPublicCandidateMetadata(generated.candidates[0]!, personalContextEvidence),
-          withPublicCandidateMetadata(generated.candidates[1]!, personalContextEvidence),
-          withPublicCandidateMetadata(generated.candidates[2]!, personalContextEvidence),
+          withPublicCandidateMetadata(
+            generated.candidates[0]!,
+            personalContextEvidence,
+            unverifiedProfileWarning(generated.candidates[0]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+          ),
+          withPublicCandidateMetadata(
+            generated.candidates[1]!,
+            personalContextEvidence,
+            unverifiedProfileWarning(generated.candidates[1]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+          ),
+          withPublicCandidateMetadata(
+            generated.candidates[2]!,
+            personalContextEvidence,
+            unverifiedProfileWarning(generated.candidates[2]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+          ),
         ];
         return { kind: "replies", candidates };
       }

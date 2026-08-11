@@ -127,6 +127,7 @@ export function createReplyPostHandler(dependencies: ReplyRouteDependencies) {
       const relationship = body.relationship ?? participant.relationship;
       const result = await dependencies.generate(command, relationship);
       if (result.kind === "clarification_required") return Response.json(result, { status: 409 });
+      if (result.kind === "personal_context_unavailable") return Response.json(result, { status: 409 });
       await dependencies.persist({ command, relationship, candidates: result.candidates });
       return Response.json({ candidates: result.candidates });
     } catch (error) {

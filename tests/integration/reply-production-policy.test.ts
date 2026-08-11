@@ -161,6 +161,11 @@ test("production fact validator retries contradictions with an opaque rule ID", 
       load: async () => baseContext,
     },
     factValidator: validatesReplyFact,
+    personalContextUsageValidator: async () => ({
+      relationship_soft: true,
+      emotion_signal: true,
+      clearer_request: true,
+    }),
   })).resolves.toMatchObject({ kind: "replies" });
 
   const retryInput = gateway.requests[1]!.input;

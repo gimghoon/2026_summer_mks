@@ -8,7 +8,9 @@ import {
   type ReplyCandidateContent,
   type ReplyGenerationContext,
   type ParticipantProfileContext,
+  type ReplyServiceDependencies,
 } from "@/domain/replies/reply-service";
+import { PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE } from "@/domain/replies/required-personal-context";
 
 class FakeGateway implements ModelGateway {
   readonly requests: StructuredModelRequest<unknown>[] = [];
@@ -85,17 +87,55 @@ function candidates(
   };
 }
 
-function dependencies(gateway: ModelGateway, extra: Partial<Parameters<typeof generateReplies>[1]> = {}) {
-  return {
-    gateway,
-    contextProvider: {
+function dependencies(
+  gateway: ModelGateway,
+  extra: Partial<ReplyServiceDependencies> = {},
+): ReplyServiceDependencies {
+  const {
+    contextProvider = {
       loadParticipantProfiles: vi.fn(async () => context.participantProfiles),
       load: vi.fn(async () => context),
     },
-    factValidator: vi.fn(() => true),
-    ...extra,
+    factValidator = vi.fn(() => true),
+    personalContextUsageValidator = alwaysReflected,
+  } = extra;
+  return {
+    gateway,
+    contextProvider,
+    factValidator,
+    personalContextUsageValidator,
   };
 }
+
+const trustedFacts = [profile({
+  id: "trusted-id",
+  value: "PRIVATE_TRUSTED_VALUE 짧고 부드럽게 답한다",
+  source: "user_confirmed",
+  locked: true,
+})];
+const inferredFacts = [profile({
+  id: "inferred-id",
+  value: "PRIVATE_INFERRED_VALUE 말끝을 부드럽게 한다",
+  source: "ai_inference",
+  locked: false,
+})];
+const trustedAndInferredFacts = [...trustedFacts, ...inferredFacts];
+
+function requiredTuple(contextBasisIds: [string[], string[], string[]] = [
+  ["trusted-id"], ["trusted-id"], ["trusted-id"],
+]) {
+  return candidates([
+    "바빴구나, 다음엔 한마디만 해주면 좋을 것 같아",
+    "기다리면서 조금 아쉬웠어",
+    "늦을 것 같으면 미리 알려줘",
+  ], contextBasisIds);
+}
+
+const alwaysReflected = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>(async () => ({
+  relationship_soft: true,
+  emotion_signal: true,
+  clearer_request: true,
+}));
 
 const invalidAdvisoryResponse = candidates([
   "사랑해 자기야, 무조건 보내, 오후 7시에~",
@@ -155,6 +195,216 @@ test("returns exactly three candidates in the required strategy order", async ()
   expect(gateway.requests[0]!.system).toContain("tilde=~");
   expect(gateway.requests[0]!.system).toContain("emoji=emoji");
   expect(gateway.requests[0]!.system).toContain("only if its key is listed in Policy.allowedDevices");
+});
+
+test("returns unavailable before generation when required mode has no eligible fact", async () => {
+  const gateway = new FakeGateway([requiredTuple()]);
+  const extract = vi.spyOn(gateway, "extract");
+  const embed = vi.spyOn(gateway, "embed");
+  const semantic = vi.fn();
+  const contextProvider = {
+    loadParticipantProfiles: vi.fn(async () => []),
+    load: vi.fn(async () => context),
+  };
+
+  const result = await generateReplies(
+    { ...command, personalContextMode: "required", indirectness: 7 },
+    { gateway, contextProvider, factValidator: () => true, personalContextUsageValidator: semantic },
+  );
+
+  expect(result).toEqual({
+    kind: "personal_context_unavailable",
+    message: PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE,
+  });
+  expect(extract).not.toHaveBeenCalled();
+  expect(embed).not.toHaveBeenCalled();
+  expect(semantic).not.toHaveBeenCalled();
+  expect(contextProvider.load).not.toHaveBeenCalled();
+});
+
+test.each([
+  [[], "empty"],
+  [["unknown"], "unknown"],
+  [["inferred-id"], "inference while trusted exists"],
+])("retries required mode with opaque basis rule for %s", async (basisIds) => {
+  const gateway = new FakeGateway([
+    requiredTuple([basisIds, basisIds, basisIds]),
+    requiredTuple(),
+  ]);
+  const contextProvider = {
+    loadParticipantProfiles: vi.fn(async () => trustedAndInferredFacts),
+    load: vi.fn(async (_command, preloadedProfiles) => ({
+      ...context,
+      participantProfiles: preloadedProfiles ?? trustedAndInferredFacts,
+    })),
+  };
+
+  const result = await generateReplies(
+    { ...command, personalContextMode: "required" },
+    {
+      gateway,
+      contextProvider,
+      factValidator: () => true,
+      personalContextUsageValidator: alwaysReflected,
+    },
+  );
+
+  expect(result.kind).toBe("replies");
+  expect(JSON.parse(gateway.requests[1]!.input).validationRuleIds)
+    .toEqual(["REQUIRED_PERSONAL_CONTEXT_MISSING"]);
+});
+
+test("checks all three required candidates in one semantic call and retries opaquely", async () => {
+  const semantic = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>()
+    .mockResolvedValueOnce({ relationship_soft: true, emotion_signal: false, clearer_request: true })
+    .mockResolvedValueOnce({ relationship_soft: true, emotion_signal: true, clearer_request: true });
+  const gateway = new FakeGateway([requiredTuple(), requiredTuple()]);
+  const result = await generateReplies(
+    { ...command, personalContextMode: "required", indirectness: 7 },
+    dependencies(gateway, {
+      contextProvider: {
+        loadParticipantProfiles: vi.fn(async () => trustedFacts),
+        load: vi.fn(async (_command, preloadedProfiles) => ({
+          ...context,
+          participantProfiles: preloadedProfiles ?? trustedFacts,
+        })),
+      },
+      personalContextUsageValidator: semantic,
+    }),
+  );
+
+  expect(result.kind).toBe("replies");
+  expect(semantic).toHaveBeenCalledTimes(2);
+  expect(semantic.mock.calls[0]![0]).toHaveLength(3);
+  expect(JSON.parse(gateway.requests[1]!.input).validationRuleIds)
+    .toEqual(["PERSONAL_CONTEXT_NOT_REFLECTED"]);
+  expect(JSON.stringify(JSON.parse(gateway.requests[1]!.input).validationRuleIds))
+    .not.toContain("PRIVATE_TRUSTED_VALUE");
+});
+
+test("uses independent selected fact IDs per required strategy", async () => {
+  const facts = [
+    profile({ id: "trusted-a", value: "A", source: "user_confirmed", locked: true }),
+    profile({ id: "trusted-b", value: "B", source: "user_confirmed", locked: true }),
+    profile({ id: "trusted-c", value: "C", source: "user_confirmed", locked: true }),
+  ];
+  const semantic = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>(async () => ({ relationship_soft: true, emotion_signal: true, clearer_request: true }));
+  const gateway = new FakeGateway([requiredTuple([["trusted-a"], ["trusted-b"], ["trusted-c"]])]);
+
+  await generateReplies({ ...command, personalContextMode: "required" }, dependencies(gateway, {
+    contextProvider: {
+      loadParticipantProfiles: async () => facts,
+      load: async (_command, preloadedProfiles) => ({ ...context, participantProfiles: preloadedProfiles ?? facts }),
+    },
+    personalContextUsageValidator: semantic,
+  }));
+
+  expect(semantic.mock.calls[0]![0].map((candidate: { selectedFacts: Array<{ id: string }> }) => (
+    candidate.selectedFacts[0]!.id
+  ))).toEqual(["trusted-a", "trusted-b", "trusted-c"]);
+});
+
+test("sends only selected required facts to the generation model", async () => {
+  const gateway = new FakeGateway([requiredTuple()]);
+  await generateReplies({ ...command, personalContextMode: "required" }, dependencies(gateway, {
+    contextProvider: {
+      loadParticipantProfiles: async () => trustedAndInferredFacts,
+      load: async () => ({
+        ...context,
+        participantProfiles: trustedAndInferredFacts,
+        currentFacts: trustedAndInferredFacts.map((fact) => fact.value),
+      }),
+    },
+    personalContextUsageValidator: alwaysReflected,
+  }));
+
+  const input = JSON.parse(gateway.requests[0]!.input);
+  expect(input.personalContextEvidence.map((fact: { id: string }) => fact.id)).toEqual(["trusted-id"]);
+  expect(input.context.participantProfiles.map((fact: { id: string }) => fact.id)).toEqual(["trusted-id"]);
+  expect(input.context.currentFacts).toEqual([]);
+  expect(gateway.requests[0]!.input).not.toContain("PRIVATE_INFERRED_VALUE");
+});
+
+test("permits every required strategy to reuse the same best fact", async () => {
+  const gateway = new FakeGateway([requiredTuple()]);
+  const semantic = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>(async () => ({ relationship_soft: true, emotion_signal: true, clearer_request: true }));
+
+  await expect(generateReplies({ ...command, personalContextMode: "required" }, dependencies(gateway, {
+    contextProvider: {
+      loadParticipantProfiles: async () => trustedFacts,
+      load: async (_command, preloadedProfiles) => ({ ...context, participantProfiles: preloadedProfiles ?? trustedFacts }),
+    },
+    personalContextUsageValidator: semantic,
+  }))).resolves.toMatchObject({ kind: "replies" });
+  expect(semantic.mock.calls[0]![0].map((candidate: { selectedFacts: Array<{ id: string }> }) => (
+    candidate.selectedFacts[0]!.id
+  ))).toEqual(["trusted-id", "trusted-id", "trusted-id"]);
+});
+
+test("adds an inference warning to every candidate when required selection is inference-only", async () => {
+  const gateway = new FakeGateway([candidates([
+    "바빴구나, 다음엔 말해줘",
+    "기다리면서 조금 아쉬웠어",
+    "늦을 때는 미리 알려줘",
+  ], [["inferred-id"], ["inferred-id"], ["inferred-id"]])]);
+
+  const result = await generateReplies({ ...command, personalContextMode: "required" }, dependencies(gateway, {
+    contextProvider: {
+      loadParticipantProfiles: async () => inferredFacts,
+      load: async (_command, preloadedProfiles) => ({ ...context, participantProfiles: preloadedProfiles ?? inferredFacts }),
+    },
+    personalContextUsageValidator: alwaysReflected,
+  }));
+
+  expect(result).toMatchObject({ kind: "replies" });
+  if (result.kind !== "replies") return;
+  expect(result.candidates.map((candidate) => candidate.warnings)).toEqual([
+    ["unverified_profile_context"],
+    ["unverified_profile_context"],
+    ["unverified_profile_context"],
+  ]);
+});
+
+test("fails closed after a second semantic failure without leaking profile facts or rejected text", async () => {
+  const rejectedText = "PRIVATE_REJECTED_SEMANTIC_TEXT";
+  const gateway = new FakeGateway([
+    candidates([rejectedText, "기다리면서 조금 아쉬웠어", "늦을 때는 미리 알려줘"], [["trusted-id"], ["trusted-id"], ["trusted-id"]]),
+    candidates([rejectedText, "기다리면서 조금 아쉬웠어", "늦을 때는 미리 알려줘"], [["trusted-id"], ["trusted-id"], ["trusted-id"]]),
+  ]);
+  const semantic = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>(async () => ({ relationship_soft: false, emotion_signal: true, clearer_request: true }));
+
+  try {
+    await generateReplies({ ...command, personalContextMode: "required" }, dependencies(gateway, {
+      contextProvider: {
+        loadParticipantProfiles: async () => trustedFacts,
+        load: async (_command, preloadedProfiles) => ({ ...context, participantProfiles: preloadedProfiles ?? trustedFacts }),
+      },
+      personalContextUsageValidator: semantic,
+    }));
+    expect.unreachable("the second semantic failure must reject");
+  } catch (error) {
+    expect(error).toMatchObject({ ruleIds: ["PERSONAL_CONTEXT_NOT_REFLECTED"] });
+    expect(String(error)).not.toContain("PRIVATE_TRUSTED_VALUE");
+    expect(String(error)).not.toContain(rejectedText);
+  }
+  const retryRules = JSON.stringify(JSON.parse(gateway.requests[1]!.input).validationRuleIds);
+  expect(retryRules).not.toContain("PRIVATE_TRUSTED_VALUE");
+  expect(retryRules).not.toContain(rejectedText);
+});
+
+test("normal mode neither calls semantic validation nor adds inference warnings", async () => {
+  const semantic = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>(async () => { throw new Error("must not run"); });
+  const gateway = new FakeGateway([requiredTuple()]);
+  const result = await generateReplies(command, dependencies(gateway, {
+    contextProvider: {
+      loadParticipantProfiles: async () => inferredFacts,
+      load: async () => ({ ...context, participantProfiles: inferredFacts }),
+    },
+    personalContextUsageValidator: semantic,
+  }));
+
+  expect(result.kind).toBe("replies");
+  expect(semantic).not.toHaveBeenCalled();
 });
 
 test("exposes verified profile evidence for known IDs and a fixed fallback for unknown IDs", async () => {
@@ -492,6 +742,7 @@ test("does not infer personal devices from the pasted conversation alone", async
         load: async () => noDeviceContext,
       },
       factValidator: () => true,
+      personalContextUsageValidator: alwaysReflected,
     },
   );
 
@@ -516,6 +767,7 @@ test("retries expressive devices that room and participant memory do not support
       load: async () => noDeviceContext,
     },
     factValidator: () => true,
+    personalContextUsageValidator: alwaysReflected,
   });
 
   expect(JSON.parse(gateway.requests[1]!.input).validationRuleIds).toEqual([
@@ -695,6 +947,7 @@ test("returns one clarification question without calling the model", async () =>
       load: async () => ambiguousContext,
     },
     factValidator: () => true,
+    personalContextUsageValidator: alwaysReflected,
   });
 
   expect(result).toEqual({ kind: "clarification_required", question: "어떤 약속을 말하는지 알려줄래?" });

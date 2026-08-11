@@ -124,6 +124,11 @@ test("production wiring selects 20 turns, minimizes provider plaintext, and enfo
       load: async () => context,
     },
     factValidator: async () => true,
+    personalContextUsageValidator: async () => ({
+      relationship_soft: true,
+      emotion_signal: true,
+      clearer_request: true,
+    }),
   });
   expect(gateway.requests[0]!.input).not.toContain("OLDEST_PRIVATE_SENTINEL");
   expect(gateway.requests[0]!.input).toContain("곰돌이 영화 약속은 다음에 미리 알려줘");

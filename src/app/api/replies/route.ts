@@ -29,6 +29,7 @@ import {
   type GenerateRepliesCommand,
   type ParticipantProfileContext,
 } from "@/domain/replies/reply-service";
+import { createPersonalContextUsageValidator } from "@/domain/replies/personal-context-usage-validator";
 import {
   buildProductionReplyContext,
   type ProductionContextSnapshot,
@@ -198,6 +199,7 @@ function productionDependencies(): ReplyRouteDependencies {
       };
       return generateReplies(command, {
         gateway,
+        personalContextUsageValidator: createPersonalContextUsageValidator(gateway),
         contextProvider: {
           async loadParticipantProfiles(currentCommand) {
             preloadedProfiles ??= await productionParticipantProfiles(currentCommand);
