@@ -2,7 +2,7 @@
 
 ## Scope and behavior
 
-Task 5 aligns the non-production browser fixture with the production `GenerateRepliesCommand` and `ReplyGenerationResult` contract. The fixture remains gated by `NODE_ENV !== "production"` and `E2E_FIXTURE_MODE === "1"`. Required mode now calls the shared `selectRequiredPersonalContext` selector, returns the typed unavailable result before storage when no eligible fact exists, generates three deterministic strategy-distinct texts that quote the selected fact meaning, resolves public evidence through the shared evidence helpers, and warns every AI-inference-only candidate.
+Task 5 aligns the non-production browser fixture with the production `GenerateRepliesCommand` and `ReplyGenerationResult` contract. The fixture remains gated by `NODE_ENV !== "production"` and `E2E_FIXTURE_MODE === "1"`. Required mode now calls the shared `selectRequiredPersonalContext` selector, returns the typed unavailable result before storage when no eligible fact exists, generates three deterministic strategy-distinct texts that apply the selected fact meaning without copying its stored statement, resolves public evidence through the shared evidence helpers, and warns every AI-inference-only candidate.
 
 Successful fixture requests persist `personalContextMode` only through `encryptJson`; unavailable requests persist neither a request nor candidates. The route retains empty fixture persistence so successful requests are not written twice. Normal-mode text, clarification, indirectness warnings, and call counts remain unchanged.
 
@@ -39,6 +39,6 @@ The exact unconfigured browser command was also attempted. It reached the local 
 
 ## Privacy and scope review
 
-The required scan found 11 expected internal/UI matches. `selectedFacts` is confined to the semantic usage validator input; `profile.value` matches are confined to in-memory context/evidence construction or the intended profile editing/display UI. There were no `console.log`/`console.debug` calls, semantic-explanation response fields, raw model outputs, plaintext profile database columns, selected fact IDs in client responses or logs, rejected candidates in responses, or retry arrays containing private values.
+The required scan found 11 expected internal/UI matches. `selectedFacts` is confined to the semantic usage validator input; `profile.value` matches are confined to in-memory context/evidence construction or the intended profile editing/display UI. No rejected/internal value, selected fact ID, semantic explanation, or raw model output leaks through failures, logs, retry rules, or plaintext database columns. Resolved basis summaries for selected facts are intentionally returned to the user and encrypted at rest.
 
 `git status --short` contained only the six scoped Task 5 files before staging. `.env.local` was not read, modified, staged, or otherwise touched during Task 5.

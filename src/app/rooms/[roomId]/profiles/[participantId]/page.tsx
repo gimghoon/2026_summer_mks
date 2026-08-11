@@ -8,5 +8,5 @@ export default async function ProfilePage({ params }: { params: Promise<{ roomId
   if (!room || room.analysisStatus !== "ready") notFound();
   const participant = room.participants.find((person) => person.id === participantId && !person.isSelf);
   if (!participant) notFound();
-  return <ProfileWorkspace roomId={roomId} participantId={participantId} relationship={participant.relationshipStyle ?? "female_friend"} />;
+  return <ProfileWorkspace roomId={roomId} participantId={participantId} participantName={participant.name} relationship={participant.relationshipStyle ?? "female_friend"} />;
 }

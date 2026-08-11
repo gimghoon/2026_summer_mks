@@ -73,8 +73,15 @@ test("fixture required mode reflects verified facts in all candidates", () => {
     const result = generateFixtureReplies(requiredInputFor(fixture.roomId, fixture.verifiedParticipantId));
     expect(result.kind).toBe("replies");
     if (result.kind !== "replies") return;
+    expect(result.candidates.map((candidate) => candidate.text)).toEqual([
+      "부드럽게 말하고 싶어. 다음에는 늦을 것 같으면 미리 알려주면 좋겠어.",
+      "기다리는 동안 조금 서운했어. 다음에는 미리 알려주면 좋겠어.",
+      "다음부터 늦을 때는 꼭 미리 한마디 해줘.",
+    ]);
+    expect(new Set(result.candidates.map((candidate) => candidate.text))).toHaveLength(3);
     expect(result.candidates.every((candidate) => (
-      candidate.text.includes("진지한 상황에서는 장난을 줄임")
+      !candidate.text.includes("진지한 상황에서는 장난을 줄임")
+        && !/[ㅎㅋ~]/u.test(candidate.text)
         && candidate.contextBasis.length > 0
         && !candidate.contextBasis.includes(NO_PERSONAL_CONTEXT_BASIS)
     ))).toBe(true);
@@ -90,7 +97,8 @@ test("fixture inference fallback warns every candidate", () => {
     expect(result.kind).toBe("replies");
     if (result.kind !== "replies") return;
     expect(result.candidates.every((candidate) => (
-      candidate.text.includes("장난이 많고 편하게 대화함")
+      !candidate.text.includes("장난이 많고 편하게 대화함")
+        && /편하게|장난/u.test(candidate.text)
         && candidate.warnings.includes("unverified_profile_context")
     ))).toBe(true);
   } finally {

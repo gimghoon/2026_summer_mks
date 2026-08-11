@@ -45,7 +45,7 @@
 | C29 | `pnpm exec playwright test --list` | Exit 0; 2 fixture tests discovered, including the expanded private reply flow. |
 | C30 | `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' pnpm exec playwright test tests/e2e/private-reply-flow.spec.ts` | Exit 0; 1/1 system-Chrome browser test passed in 10.1 seconds. The unconfigured command could not launch because Playwright's cached Chromium executable was absent. |
 | C31 | `git diff --check` | Exit 0 with no output. |
-| C32 | `rg -n "console\.(log|debug)|selectedFacts|semantic.*explanation|raw.*model|profile.*value" src/app/api/replies src/domain/replies src/components` | Exit 0 with 11 reviewed internal/UI matches; no console logging, semantic-explanation field, raw model output, client response field, retry rule, or plaintext database column exposed private profile values. |
+| C32 | `rg -n "console\.(log|debug)|selectedFacts|semantic.*explanation|raw.*model|profile.*value" src/app/api/replies src/domain/replies src/components` | Exit 0 with 11 reviewed internal/UI matches. No rejected/internal value, selected fact ID, semantic explanation, or raw model output leaks through failures, logs, retry rules, or plaintext database columns. Resolved basis summaries for selected facts are intentionally user-visible and are encrypted at rest. |
 
 ## Design section 11 acceptance mapping
 
@@ -85,7 +85,7 @@
 
 | Requirement | Evidence | Observed result | Commit hash |
 | --- | --- | --- | --- |
-| Verified facts appear in every required-mode candidate | `tests/unit/e2e-fixture-store.test.ts`, `tests/e2e/private-reply-flow.spec.ts`; C23, C30 | Pass: all three strategy-distinct fixture texts reflect a selected verified fact and display stable, non-fallback evidence. | `ea7a39c` + Task 5 diff |
+| Verified facts appear in every required-mode candidate | `tests/unit/e2e-fixture-store.test.ts`, `tests/e2e/private-reply-flow.spec.ts`; C23, C30 | Pass: all three strategy-distinct fixture texts apply the selected verified fact semantically without copying its stored statement; serious-context fixtures exclude laughter and playful devices while displaying stable, non-fallback evidence. | `ea7a39c` + Task 5 diff |
 | AI-only fallback is explicit | `tests/unit/e2e-fixture-store.test.ts`, `tests/e2e/private-reply-flow.spec.ts`; C23, C30 | Pass: every AI-only candidate carries the public `unverified_profile_context` warning and the browser renders it on all three cards. | `ea7a39c` + Task 5 diff |
 | Missing eligible facts recover without persistence | `tests/unit/e2e-fixture-store.test.ts`, `tests/e2e/private-reply-flow.spec.ts`; C23, C30 | Pass: required mode returns the exact typed unavailable result before request storage; the browser shows the exact message and opens the selected empty profile via `프로필 확인하기`. | `ea7a39c` + Task 5 diff |
 | Required mode is remembered | `tests/e2e/private-reply-flow.spec.ts`; C30 | Pass: the checked state survives reload and remains enabled when changing among verified, inferred, and empty-profile participants. | `ea7a39c` + Task 5 diff |

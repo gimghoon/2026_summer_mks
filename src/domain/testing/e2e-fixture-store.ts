@@ -335,6 +335,33 @@ function fixtureCandidatesFor(indirectness: IndirectnessLevel): FixtureReplyCand
   return fixtureCandidates.map((candidate) => ({ ...candidate, warnings: [...warnings] })) as FixtureReplyCandidates;
 }
 
+type FixtureReplyTone = "serious" | "easygoing" | "neutral";
+
+function fixtureReplyTone(fact: ParticipantProfileContext): FixtureReplyTone {
+  const meaning = [fact.value, ...(fact.conditions ?? []), ...(fact.exceptions ?? [])].join(" ");
+  if (/진지|장난.{0,4}(?:줄|삼가|하지|안)|농담.{0,4}(?:없이|하지|안)/u.test(meaning)) return "serious";
+  if (/장난|편하/u.test(meaning)) return "easygoing";
+  return "neutral";
+}
+
+const fixtureReplyTexts: Record<FixtureReplyTone, readonly [string, string, string]> = {
+  serious: [
+    "부드럽게 말하고 싶어. 다음에는 늦을 것 같으면 미리 알려주면 좋겠어.",
+    "기다리는 동안 조금 서운했어. 다음에는 미리 알려주면 좋겠어.",
+    "다음부터 늦을 때는 꼭 미리 한마디 해줘.",
+  ],
+  easygoing: [
+    "평소처럼 편하게 말할게 ㅎㅎ 다음에는 늦을 것 같으면 살짝만 알려줘.",
+    "장난으로 넘기기엔 기다리는 동안 조금 아쉬웠어~",
+    "편하게 이야기하더라도 다음부터 늦을 때는 미리 한마디 부탁해.",
+  ],
+  neutral: [
+    "부드럽게 말할게. 다음에는 늦을 것 같으면 미리 알려줘.",
+    "솔직히 말하면 기다리는 동안 조금 아쉬웠어.",
+    "다음부터 늦을 때는 미리 한마디 부탁해.",
+  ],
+};
+
 function requiredFixtureCandidates(
   facts: ParticipantProfileContext[],
   inferenceOnly: boolean,
@@ -342,16 +369,11 @@ function requiredFixtureCandidates(
 ): FixtureReplyCandidates {
   const evidence = buildPersonalContextEvidence(facts);
   const inferenceWarnings = inferenceOnly ? ["unverified_profile_context" as const] : [];
-  const reflectFact = [
-    (value: string) => `“${value}”라는 점을 생각해서 부드럽게 말할게. 다음에는 늦을 것 같으면 살짝만 알려줘 ㅎㅎ`,
-    (value: string) => `“${value}”라는 점을 떠올리면, 그래도 기다리면서 조금 아쉽긴 했어~`,
-    (value: string) => `“${value}”라는 점은 이해하지만, 다음부터 늦을 때는 미리 한마디 부탁해`,
-  ] as const;
   return fixtureCandidatesFor(indirectness).map((candidate, index) => {
     const fact = facts[index % facts.length]!;
     return {
       ...candidate,
-      text: reflectFact[index]!(fact.value),
+      text: fixtureReplyTexts[fixtureReplyTone(fact)][index],
       contextBasis: resolveContextBasis([fact.id], evidence),
       warnings: [...candidate.warnings, ...inferenceWarnings],
     };

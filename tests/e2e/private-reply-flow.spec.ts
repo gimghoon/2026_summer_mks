@@ -15,14 +15,15 @@ function replyCards(page: import("@playwright/test").Page) {
 }
 
 async function importAndAnalyzeForPrivateFlow(page: import("@playwright/test").Page): Promise<string> {
-  const importPanel = page.getByRole("heading", { name: "카카오톡 파일 가져오기" }).locator("..");
-  await importPanel.getByRole("textbox", { name: "내 이름" }).fill("지훈");
-  await importPanel.getByRole("button", { name: "카카오톡 파일 업로드" })
+  const workspace = page.getByRole("main");
+  await expect(workspace.getByRole("heading", { name: "카카오톡 파일 가져오기" })).toBeVisible();
+  await workspace.getByRole("textbox", { name: "내 이름" }).fill("지훈");
+  await workspace.getByRole("button", { name: "카카오톡 파일 업로드" })
     .setInputFiles("tests/fixtures/kakao/group-chat.txt");
-  await expect(importPanel.getByRole("button", { name: "파일 가져오기" })).toBeEnabled();
-  await importPanel.getByRole("button", { name: "파일 가져오기" }).click();
-  const review = page.getByRole("heading", { name: "가져오기 검토" }).locator("..");
-  await review.getByRole("button", { name: "검토 후 분석 시작" }).click();
+  await expect(workspace.getByRole("button", { name: "파일 가져오기" })).toBeEnabled();
+  await workspace.getByRole("button", { name: "파일 가져오기" }).click();
+  await expect(workspace.getByRole("heading", { name: "가져오기 검토" })).toBeVisible();
+  await workspace.getByRole("button", { name: "검토 후 분석 시작" }).click();
   await expect(page.getByRole("heading", { name: "주말 약속 카카오톡 대화" })).toBeVisible();
   const roomId = new URL(page.url()).pathname.split("/").at(-1);
   if (!roomId) throw new Error("room id missing from analyzed-room URL");
@@ -41,16 +42,16 @@ test("covers verified, inferred, unavailable, remembered mode, clarification, an
   await page.getByRole("link", { name: "민수 프로필" }).click();
   await expect(page.getByRole("heading", { name: "추정은 같이 확인해요" })).toBeVisible();
   await page.getByRole("button", { name: "직접 수정" }).click();
-  await page.getByRole("textbox", { name: "관찰된 성향", exact: true }).fill("친한 사람에게만 장난이 많음");
+  await page.getByRole("textbox", { name: "관찰된 성향", exact: true }).fill("진지한 상황에서는 장난을 줄임");
   await page.getByRole("button", { name: "저장" }).click();
-  await expect(page.getByText("친한 사람에게만 장난이 많음")).toBeVisible();
+  await expect(page.getByText("진지한 상황에서는 장난을 줄임")).toBeVisible();
 
-  await page.getByPlaceholder("예: 민수는 친한 사람에게만 저렇게 말해").fill("진지한 상황에서는 장난을 줄여");
+  await page.getByPlaceholder("예: 민수는 친한 사람에게만 저렇게 말해").fill("약속이 틀어지면 농담 없이 진지하게 말해");
   await page.getByRole("button", { name: "수정 제안 받기" }).click();
-  await expect(page.getByRole("status")).toContainText("진지한 상황에서는 장난을 줄여");
+  await expect(page.getByRole("status")).toContainText("약속이 틀어지면 농담 없이 진지하게 말해");
   await page.getByRole("button", { name: "이 내용으로 반영" }).click();
   await expect(page.getByRole("region", { name: "분석된 프로필 사실" }))
-    .toContainText("진지한 상황에서는 장난을 줄여");
+    .toContainText("약속이 틀어지면 농담 없이 진지하게 말해");
 
   await page.getByRole("link", { name: "답장 만들기" }).click();
   const replyWorkspace = page.getByRole("main");
@@ -58,11 +59,13 @@ test("covers verified, inferred, unavailable, remembered mode, clarification, an
   await requiredMode.check();
   await generateReplies(page);
   await expect(replyCards(page)).toHaveCount(3);
-  for (const card of await replyCards(page).all()) {
-    await expect(card.getByRole("listitem").filter({
-      hasText: /personality_tendency: (친한 사람에게만 장난이 많음|진지한 상황에서는 장난을 줄여)/u,
-    })).toBeVisible();
-  }
+  await expect(replyCards(page).filter({ hasText: "부드럽게 관계 지키기" }))
+    .toContainText("부드럽게 말하고 싶어. 다음에는 늦을 것 같으면 미리 알려주면 좋겠어.");
+  await expect(replyCards(page).filter({ hasText: "은근히 눈치 주기" }))
+    .toContainText("기다리는 동안 조금 서운했어. 다음에는 미리 알려주면 좋겠어.");
+  await expect(replyCards(page).filter({ hasText: "조금 더 분명하게 말하기" }))
+    .toContainText("다음부터 늦을 때는 꼭 미리 한마디 해줘.");
+  for (const card of await replyCards(page).all()) await expect(card).not.toContainText(/[ㅎㅋ~]/u);
   await page.reload();
   await expect(page.getByRole("main").getByRole("checkbox", { name: "개인 컨텍스트 강제 반영" })).toBeChecked();
   await generateReplies(page);
@@ -89,10 +92,12 @@ test("covers verified, inferred, unavailable, remembered mode, clarification, an
   await page.getByRole("link", { name: "유나 답장 만들기" }).click();
   await expect(page.getByRole("main").getByRole("checkbox", { name: "개인 컨텍스트 강제 반영" })).toBeChecked();
   await generateReplies(page);
-  const recovery = page.getByRole("main").getByRole("heading", { name: "프로필을 먼저 확인해 주세요" }).locator("..");
-  await expect(recovery).toContainText(PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE);
+  const recovery = page.getByRole("main");
+  await expect(recovery.getByRole("heading", { name: "프로필을 먼저 확인해 주세요" })).toBeVisible();
+  await expect(recovery.getByText(PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE, { exact: true })).toBeVisible();
   await recovery.getByRole("link", { name: "프로필 확인하기" }).click();
   await expect(page.getByRole("heading", { name: "추정은 같이 확인해요" })).toBeVisible();
+  await expect(page.getByText("유나 프로필 검수", { exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "분석된 프로필 사실" }))
     .toContainText("아직 추정된 항목이 없어요");
 
