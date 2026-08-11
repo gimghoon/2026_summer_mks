@@ -5,6 +5,7 @@ import {
   type ProductionContextSnapshot,
 } from "@/domain/replies/production-context";
 import { generateReplies, type GenerateRepliesCommand } from "@/domain/replies/reply-service";
+import { PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE, selectRequiredPersonalContext } from "@/domain/replies/required-personal-context";
 
 const command: GenerateRepliesCommand = {
   roomId: "room-a",
@@ -105,6 +106,63 @@ test("parses pasted speaker lines into adjacent turns", () => {
     ["person-minsu", 2],
     ["person-self", 1],
   ]);
+});
+
+test("preserves profile identity and provenance in the production reply context", async () => {
+  const context = await buildProductionReplyContext(command, "female_friend", new RecordingGateway(), snapshot);
+
+  expect(context.participantProfiles).toEqual([{
+    id: "fact-nickname",
+    kind: "nickname",
+    value: "곰돌이",
+    source: "user_confirmed",
+    locked: true,
+  }]);
+});
+
+test("required selection excludes profile change proposals", () => {
+  const selection = selectRequiredPersonalContext([{
+    id: "proposal-fact",
+    kind: "nickname",
+    value: "제안된 별명",
+    source: "ai_change_proposal",
+    locked: false,
+  }]);
+
+  expect(selection.facts).toEqual([]);
+});
+
+test("required profile preflight returns before embedding while normal mode skips it", async () => {
+  const gateway = new RecordingGateway();
+  const loadParticipantProfiles = vi.fn(async () => []);
+  const load = vi.fn(async () => buildProductionReplyContext(command, "female_friend", gateway, snapshot));
+
+  const result = await generateReplies({ ...command, personalContextMode: "required" }, {
+    gateway,
+    contextProvider: { loadParticipantProfiles, load },
+    factValidator: async () => true,
+    personalContextUsageValidator: async () => ({
+      relationship_soft: true,
+      emotion_signal: true,
+      clearer_request: true,
+    }),
+  });
+
+  expect(result).toEqual({ kind: "personal_context_unavailable", message: PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE });
+  expect(load).not.toHaveBeenCalled();
+  expect(gateway.embeddingInputs).toEqual([]);
+
+  await generateReplies(command, {
+    gateway,
+    contextProvider: { loadParticipantProfiles, load },
+    factValidator: async () => true,
+    personalContextUsageValidator: async () => ({
+      relationship_soft: true,
+      emotion_signal: true,
+      clearer_request: true,
+    }),
+  });
+  expect(loadParticipantProfiles).toHaveBeenCalledTimes(1);
 });
 
 test("production wiring selects 20 turns, minimizes provider plaintext, and enforces the group participant", async () => {

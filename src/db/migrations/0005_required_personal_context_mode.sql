@@ -1,0 +1,2 @@
+ALTER TABLE "reply_requests" ADD COLUMN "personal_context_mode" text DEFAULT 'normal' NOT NULL;--> statement-breakpoint
+ALTER TABLE "reply_requests" ADD CONSTRAINT "reply_requests_personal_context_mode_check" CHECK ("reply_requests"."personal_context_mode" in ('normal', 'required'));

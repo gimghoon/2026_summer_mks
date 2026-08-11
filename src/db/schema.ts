@@ -163,6 +163,7 @@ export const replyRequests = pgTable(
     participantId: uuid("participant_id").notNull().references(() => participants.id, { onDelete: "cascade" }),
     relationshipStyle: relationshipStyleEnum("relationship_style").notNull(),
     indirectness: integer("indirectness").notNull(),
+    personalContextMode: text("personal_context_mode").notNull().default("normal"),
     encryptedPastedConversation: text("encrypted_pasted_conversation").notNull(),
     encryptedSituation: text("encrypted_situation").notNull(),
     encryptedIntent: text("encrypted_intent").notNull(),
@@ -170,6 +171,7 @@ export const replyRequests = pgTable(
   },
   (table) => [
     check("reply_requests_indirectness_check", sql`${table.indirectness} between 1 and 7`),
+    check("reply_requests_personal_context_mode_check", sql`${table.personalContextMode} in ('normal', 'required')`),
   ],
 );
 

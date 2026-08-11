@@ -6,6 +6,7 @@ import {
   type ReplyCandidate,
 } from "@/domain/replies/reply-service";
 import { NO_PERSONAL_CONTEXT_BASIS } from "@/domain/replies/reply-evidence";
+import { PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE } from "@/domain/replies/required-personal-context";
 
 const roomId = "11111111-1111-4111-8111-111111111111";
 const participantId = "22222222-2222-4222-8222-222222222222";
@@ -63,11 +64,65 @@ test("returns exactly three candidates and uses the saved default indirectness",
 
   expect(response.status).toBe(200);
   await expect(response.json()).resolves.toEqual({ candidates });
-  expect(deps.generate).toHaveBeenCalledWith(expect.objectContaining({ indirectness: 3 }), "female_friend");
+  expect(deps.generate).toHaveBeenCalledWith(expect.objectContaining({
+    indirectness: 3,
+    personalContextMode: "normal",
+  }), "female_friend");
   expect(deps.persist).toHaveBeenCalledWith(expect.objectContaining({
     relationship: "female_friend",
     candidates,
   }));
+});
+
+test("accepts required personal context mode and persists it", async () => {
+  const deps = dependencies();
+
+  const response = await createReplyPostHandler(deps)(request(validBody({ personalContextMode: "required" })));
+
+  expect(response.status).toBe(200);
+  expect(deps.generate).toHaveBeenCalledWith(
+    expect.objectContaining({ personalContextMode: "required" }),
+    "female_friend",
+  );
+  expect(deps.persist).toHaveBeenCalledWith(expect.objectContaining({
+    command: expect.objectContaining({ personalContextMode: "required" }),
+  }));
+});
+
+test("rejects an unknown personal context mode", async () => {
+  const deps = dependencies();
+
+  const response = await createReplyPostHandler(deps)(request(validBody({ personalContextMode: "always" })));
+
+  expect(response.status).toBe(400);
+  expect(deps.generate).not.toHaveBeenCalled();
+  expect(deps.persist).not.toHaveBeenCalled();
+});
+
+test("returns unavailable required context without persisting or logging profile details", async () => {
+  const privateFactValue = "민수의 비밀 별명은 밤토리";
+  const selectedFactId = "fact-private-night-chestnut";
+  const deps = dependencies({
+    generate: vi.fn(async () => ({
+      kind: "personal_context_unavailable" as const,
+      message: PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE,
+    })),
+  });
+
+  const response = await createReplyPostHandler(deps)(request(validBody({ personalContextMode: "required" })));
+
+  expect(response.status).toBe(409);
+  const responseBody = await response.text();
+  expect(JSON.parse(responseBody)).toEqual({
+    kind: "personal_context_unavailable",
+    message: PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE,
+  });
+  expect(deps.persist).not.toHaveBeenCalled();
+  expect(deps.log).not.toHaveBeenCalled();
+  expect(responseBody).not.toContain(privateFactValue);
+  expect(responseBody).not.toContain(selectedFactId);
+  expect(JSON.stringify(deps.log.mock.calls)).not.toContain(privateFactValue);
+  expect(JSON.stringify(deps.log.mock.calls)).not.toContain(selectedFactId);
 });
 
 test.each([6, 7] as const)("accepts indirectness level %s", async (indirectness) => {

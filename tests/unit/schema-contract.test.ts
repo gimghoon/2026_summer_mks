@@ -82,6 +82,16 @@ test("registers nullable encrypted reply evidence and warnings", () => {
   expect(journal.entries).toContainEqual(expect.objectContaining({ tag: "0004_advisory_reply_metadata" }));
 });
 
+test("stores the required personal context request mode", () => {
+  expect(Object.keys(getTableColumns(replyRequests))).toContain("personalContextMode");
+  const migration = readFileSync(
+    "src/db/migrations/0005_required_personal_context_mode.sql",
+    "utf8",
+  );
+  expect(migration).toMatch(/ADD COLUMN "personal_context_mode" text DEFAULT 'normal' NOT NULL/iu);
+  expect(migration).toMatch(/CHECK \("reply_requests"\."personal_context_mode" in \('normal', 'required'\)\)/iu);
+});
+
 test("preserves idempotent imports and vector search configuration", () => {
   const messageConfig = getTableConfig(messages);
   expect(messageConfig.uniqueConstraints).toEqual(expect.arrayContaining([

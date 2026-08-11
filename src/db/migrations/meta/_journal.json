@@ -29,6 +29,13 @@
       "when": 1786377136059,
       "tag": "0004_advisory_reply_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786439636732,
+      "tag": "0005_required_personal_context_mode",
+      "breakpoints": true
     }
   ]
 }

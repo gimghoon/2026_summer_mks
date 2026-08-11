@@ -50,10 +50,10 @@ type StoredChunkMemory = {
   relationshipSignals?: string[];
 } | string;
 
-function participantProfileContexts(
-  facts: Awaited<ReturnType<typeof listProfileFacts>>,
-): ParticipantProfileContext[] {
-  return facts.map((fact) => ({
+async function loadParticipantProfileContext(
+  participantId: string,
+): Promise<ParticipantProfileContext[]> {
+  return (await listProfileFacts(participantId)).map((fact) => ({
     id: fact.id,
     kind: fact.kind,
     value: fact.value,
@@ -62,12 +62,6 @@ function participantProfileContexts(
     source: fact.source,
     locked: fact.locked,
   }));
-}
-
-async function productionParticipantProfiles(
-  command: GenerateRepliesCommand,
-): Promise<ParticipantProfileContext[]> {
-  return participantProfileContexts(await listProfileFacts(command.participantId));
 }
 
 async function productionContextSnapshot(
@@ -101,7 +95,7 @@ async function productionContextSnapshot(
       encryptedName: participants.encryptedName,
       isSelf: participants.isSelf,
     }).from(participants).where(eq(participants.roomId, command.roomId)),
-    preloadedProfiles ?? productionParticipantProfiles(command),
+    preloadedProfiles ?? loadParticipantProfileContext(command.participantId),
   ]);
   const messageIds = storedTurns.flatMap((turn) => decryptJson<string[]>(turn.encryptedMessageIds));
   const storedMessages = messageIds.length === 0 ? [] : await database.select({
@@ -202,7 +196,7 @@ function productionDependencies(): ReplyRouteDependencies {
         personalContextUsageValidator: createPersonalContextUsageValidator(gateway),
         contextProvider: {
           async loadParticipantProfiles(currentCommand) {
-            preloadedProfiles ??= await productionParticipantProfiles(currentCommand);
+            preloadedProfiles ??= await loadParticipantProfileContext(currentCommand.participantId);
             return preloadedProfiles;
           },
           async load(currentCommand, providedProfiles) {
@@ -233,6 +227,7 @@ function productionDependencies(): ReplyRouteDependencies {
           encryptedPastedConversation: encryptJson(command.pastedConversation),
           encryptedSituation: encryptJson(command.situation),
           encryptedIntent: encryptJson(command.intent),
+          personalContextMode: command.personalContextMode,
         }).returning({ id: replyRequests.id });
         const storedRequest = requestRows[0];
         if (!storedRequest) throw new Error("Could not record reply request");

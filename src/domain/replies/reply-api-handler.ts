@@ -22,6 +22,7 @@ const replyBodySchema = z.object({
   intent: z.string().trim().min(1).max(1_000),
   indirectness: z.number().int().min(1).max(7).optional(),
   relationship: z.enum(["female_friend", "girlfriend"]).optional(),
+  personalContextMode: z.enum(["normal", "required"]).optional(),
 }).strict();
 
 export type ReplyBody = z.infer<typeof replyBodySchema>;
@@ -121,7 +122,7 @@ export function createReplyPostHandler(dependencies: ReplyRouteDependencies) {
       situation: body.situation,
       intent: body.intent,
       indirectness: (body.indirectness as IndirectnessLevel | undefined) ?? DEFAULT_INDIRECTNESS,
-      personalContextMode: "normal",
+      personalContextMode: body.personalContextMode ?? "normal",
     };
     try {
       const relationship = body.relationship ?? participant.relationship;
