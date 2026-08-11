@@ -27,6 +27,17 @@ test("renders verified context basis and advisory warnings", () => {
   )).toBeVisible();
 });
 
+test("shows the exact notice for AI-inferred personal context", () => {
+  render(<ReplyResults candidates={[{
+    ...candidates[0],
+    warnings: ["unverified_profile_context"],
+  }]} />);
+
+  expect(screen.getByText(
+    "AI가 추정한 개인 컨텍스트를 사용했어요. 실제 성향과 맞는지 확인해 주세요.",
+  )).toBeVisible();
+});
+
 test("limits context basis and deduplicates warning badges", () => {
   render(<ReplyResults candidates={[{
     ...candidates[0],

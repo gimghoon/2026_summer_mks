@@ -14,7 +14,7 @@ const warningLabels: Record<ReplyWarning, string> = {
   specific_fact_inference: "사실 추측 포함",
   profile_conflict: "프로필과 다를 수 있음",
   important_intent_ambiguity: "중요 의도 불명확",
-  unverified_profile_context: "AI 추론 프로필을 확인해 주세요",
+  unverified_profile_context: "AI가 추정한 개인 컨텍스트를 사용했어요. 실제 성향과 맞는지 확인해 주세요.",
 };
 
 export function ReplyResults({ candidates, clarification, onRetry }: { candidates?: ReplyCandidate[]; clarification?: string; onRetry?: (answer: string) => void }) {
