@@ -66,3 +66,57 @@ test("gives identical same-minute messages occurrence fingerprints that remain s
     second.messages.map((message) => message.sourceFingerprint),
   );
 });
+
+test("parses KakaoTalk Date User Message CSV with quoted content", () => {
+  const parsed = parseKakaoExport(fixture("group-chat.csv"));
+
+  expect(parsed.participants).toEqual(["민수", "지훈"]);
+  expect(parsed.messages).toHaveLength(3);
+  expect(parsed.messages[0]).toMatchObject({
+    speaker: "민수",
+    text: "거의 다 왔어, 잠깐만",
+    sourceLine: 2,
+    sentAt: new Date("2026-08-07T00:01:02.000Z"),
+  });
+  expect(parsed.messages[1]!.text).toBe("그럼 \"정문\"에서 봐");
+  expect(parsed.messages[2]).toMatchObject({ text: "첫 줄\n둘째 줄", sourceLine: 4 });
+  expect(parsed.unparsedLines).toEqual([]);
+});
+
+test("keeps CSV fingerprints stable and distinct for repeated records", () => {
+  const raw = [
+    "Date,User,Message",
+    "2026-08-07 09:01:02,민수,응",
+    "2026-08-07 09:01:02,민수,응",
+  ].join("\n");
+  const first = parseKakaoExport(raw);
+  const second = parseKakaoExport(raw);
+
+  expect(new Set(first.messages.map(({ sourceFingerprint }) => sourceFingerprint)).size).toBe(2);
+  expect(first.messages.map(({ sourceFingerprint }) => sourceFingerprint)).toEqual(
+    second.messages.map(({ sourceFingerprint }) => sourceFingerprint),
+  );
+});
+
+test("accepts a BOM and CRLF and reports malformed CSV rows", () => {
+  const raw = [
+    "\uFEFFDate,User,Message",
+    "2026-08-07 09:01:02,민수,안녕",
+    "2026-99-07 09:01:02,민수,잘못된 날짜",
+    "2026-08-07 09:03:04,,이름 없음",
+  ].join("\r\n");
+  const parsed = parseKakaoExport(raw);
+
+  expect(parsed.messages).toHaveLength(1);
+  expect(parsed.unparsedLines.map(({ line }) => line)).toEqual([3, 4]);
+});
+
+test("reports an unterminated quoted CSV record", () => {
+  const parsed = parseKakaoExport([
+    "Date,User,Message",
+    "2026-08-07 09:01:02,민수,\"끝나지 않은 메시지",
+  ].join("\n"));
+
+  expect(parsed.messages).toEqual([]);
+  expect(parsed.unparsedLines.map(({ line }) => line)).toEqual([2]);
+});

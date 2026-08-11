@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { isKakaoCsv, parseKakaoCsv } from "@/domain/kakao/csv-parser";
+
 export type MessageKind = "text" | "media_event" | "deleted_event";
 
 export type ParsedMessage = {
@@ -88,7 +90,25 @@ function isMalformedTimestampLine(line: string): boolean {
 
 /** Parses the two date-based KakaoTalk text-export formats used by current clients. */
 export function parseKakaoExport(input: string): ParsedKakaoExport {
-  const lines = input.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const normalizedInput = input.replace(/^\uFEFF/, "");
+  if (isKakaoCsv(normalizedInput)) {
+    const parsedCsv = parseKakaoCsv(normalizedInput);
+    const messages = parsedCsv.messages.map((message) => ({
+      ...message,
+      kind: messageKind(message.text),
+      sourceFingerprint: "",
+    }));
+    const participants = new Set(messages.map(({ speaker }) => speaker));
+    assignFingerprints(messages);
+    return {
+      title: "",
+      participants: [...participants],
+      messages,
+      unparsedLines: parsedCsv.unparsedLines,
+    };
+  }
+
+  const lines = normalizedInput.split(/\r?\n/);
   const messages: ParsedMessageWithFingerprint[] = [];
   const unparsedLines: Array<{ line: number; text: string }> = [];
   const participants = new Set<string>();
@@ -137,6 +157,12 @@ export function parseKakaoExport(input: string): ParsedKakaoExport {
     currentMessage.kind = messageKind(currentMessage.text);
   }
 
+  assignFingerprints(messages);
+
+  return { title, participants: [...participants], messages, unparsedLines };
+}
+
+function assignFingerprints(messages: ParsedMessageWithFingerprint[]): void {
   const occurrences = new Map<string, number>();
   for (const message of messages) {
     const occurrenceKey = [
@@ -155,6 +181,4 @@ export function parseKakaoExport(input: string): ParsedKakaoExport {
       occurrenceOrdinal,
     );
   }
-
-  return { title, participants: [...participants], messages, unparsedLines };
 }
