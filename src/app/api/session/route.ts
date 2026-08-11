@@ -42,7 +42,7 @@ export async function POST(request: Request): Promise<Response> {
     return new Response(null, {
       status: 303,
       headers: {
-        location: new URL("/", request.url).toString(),
+        location: "/rooms",
         "set-cookie": sessionCookie,
       },
     });
