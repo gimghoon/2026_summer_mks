@@ -7,6 +7,7 @@ import {
   type GenerateRepliesCommand,
   type ReplyCandidateContent,
   type ReplyGenerationContext,
+  type ParticipantProfileContext,
 } from "@/domain/replies/reply-service";
 
 class FakeGateway implements ModelGateway {
@@ -34,7 +35,19 @@ const command: GenerateRepliesCommand = {
   situation: "답이 늦어서 조금 서운하지만 차분하게 말하고 싶다",
   intent: "apology_prompt",
   indirectness: 4,
+  personalContextMode: "normal",
 };
+
+function profile(overrides: Partial<ParticipantProfileContext> = {}): ParticipantProfileContext {
+  return {
+    id: "fact-profile",
+    kind: "speech_pattern",
+    value: "짧고 부드럽게 말한다",
+    source: "user_confirmed",
+    locked: true,
+    ...overrides,
+  };
+}
 
 const context: ReplyGenerationContext = {
   relationship: "female_friend",
@@ -55,7 +68,7 @@ const context: ReplyGenerationContext = {
     turns: [],
   }],
   roomMemory: "친한 대화에서는 ㅋㅋ와 이모지를 가끔 쓴다",
-  participantProfiles: [{ kind: "speech_pattern", value: "짧고 부드럽게 말한다" }],
+  participantProfiles: [profile()],
   currentFacts: ["상대의 답이 오늘 늦었다"],
 };
 
@@ -75,7 +88,10 @@ function candidates(
 function dependencies(gateway: ModelGateway, extra: Partial<Parameters<typeof generateReplies>[1]> = {}) {
   return {
     gateway,
-    contextProvider: { load: vi.fn(async () => context) },
+    contextProvider: {
+      loadParticipantProfiles: vi.fn(async () => context.participantProfiles),
+      load: vi.fn(async () => context),
+    },
     factValidator: vi.fn(() => true),
     ...extra,
   };
@@ -146,7 +162,7 @@ test("exposes verified profile evidence for known IDs and a fixed fallback for u
     "바빴구나, 다음엔 한마디만 해주면 좋을 것 같아",
     "괜찮긴 한데 기다리면서 살짝 신경 쓰이긴 했어",
     "다음부터 늦을 것 같으면 미리 알려줘",
-  ], [["profile-0"], ["invented"], []])]);
+  ], [["fact-profile"], ["invented"], []])]);
 
   const result = await generateReplies(command, dependencies(gateway));
 
@@ -161,7 +177,7 @@ test("exposes verified profile evidence for known IDs and a fixed fallback for u
     warnings: [],
   });
   expect(JSON.parse(gateway.requests[0]!.input).personalContextEvidence).toEqual([
-    { id: "profile-0", summary: "speech_pattern: 짧고 부드럽게 말한다" },
+    { id: "fact-profile", summary: "speech_pattern: 짧고 부드럽게 말한다" },
   ]);
 });
 
@@ -464,14 +480,17 @@ test("does not infer personal devices from the pasted conversation alone", async
   const noDeviceContext = {
     ...context,
     roomMemory: "평소 짧고 차분하게 답한다",
-    participantProfiles: [{ kind: "speech_pattern", value: "문장 부호를 거의 쓰지 않는다" }],
+    participantProfiles: [profile({ value: "문장 부호를 거의 쓰지 않는다" })],
   };
 
   await generateReplies(
     { ...command, pastedConversation: `${command.pastedConversation}\n상대: ㅋㅋ` },
     {
       gateway,
-      contextProvider: { load: async () => noDeviceContext },
+      contextProvider: {
+        loadParticipantProfiles: async () => noDeviceContext.participantProfiles,
+        load: async () => noDeviceContext,
+      },
       factValidator: () => true,
     },
   );
@@ -487,12 +506,15 @@ test("retries expressive devices that room and participant memory do not support
   const noDeviceContext = {
     ...context,
     roomMemory: "평소 짧고 차분하게 답한다",
-    participantProfiles: [{ kind: "speech_pattern", value: "문장 부호를 거의 쓰지 않는다" }],
+    participantProfiles: [profile({ value: "문장 부호를 거의 쓰지 않는다" })],
   };
 
   await generateReplies(command, {
     gateway,
-    contextProvider: { load: async () => noDeviceContext },
+    contextProvider: {
+      loadParticipantProfiles: async () => noDeviceContext.participantProfiles,
+      load: async () => noDeviceContext,
+    },
     factValidator: () => true,
   });
 
@@ -668,7 +690,10 @@ test("returns one clarification question without calling the model", async () =>
 
   const result = await generateReplies(command, {
     gateway,
-    contextProvider: { load: async () => ambiguousContext },
+    contextProvider: {
+      loadParticipantProfiles: async () => ambiguousContext.participantProfiles,
+      load: async () => ambiguousContext,
+    },
     factValidator: () => true,
   });
 

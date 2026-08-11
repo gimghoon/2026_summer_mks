@@ -17,6 +17,7 @@ const command: GenerateRepliesCommand = {
   situation: "약속 답장이 늦어서 차분하게 말하고 싶다",
   intent: "다음에는 미리 알려 달라고 요청한다",
   indirectness: 3,
+  personalContextMode: "normal",
 };
 
 class RecordingGateway implements ModelGateway {
@@ -56,7 +57,13 @@ const snapshot: ProductionContextSnapshot = {
     { id: "person-seoyeon", name: "서연", isSelf: false },
   ],
   roomMemory: "친구들과 약속을 자주 잡는 방",
-  participantProfiles: [{ kind: "nickname", value: "곰돌이" }],
+  participantProfiles: [{
+    id: "fact-nickname",
+    kind: "nickname",
+    value: "곰돌이",
+    source: "user_confirmed",
+    locked: true,
+  }],
   chunks: [
     {
       chunkId: "target-history",
@@ -112,7 +119,10 @@ test("production wiring selects 20 turns, minimizes provider plaintext, and enfo
 
   await generateReplies(command, {
     gateway,
-    contextProvider: { load: async () => context },
+    contextProvider: {
+      loadParticipantProfiles: async () => context.participantProfiles,
+      load: async () => context,
+    },
     factValidator: async () => true,
   });
   expect(gateway.requests[0]!.input).not.toContain("OLDEST_PRIVATE_SENTINEL");

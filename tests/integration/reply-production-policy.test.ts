@@ -18,6 +18,7 @@ const command: GenerateRepliesCommand = {
   situation: "답장이 늦어 서운했지만 관계를 해치지 않게 대화하고 싶다",
   intent: "다음에는 늦을 때 미리 알려 달라고 요청한다",
   indirectness: 3,
+  personalContextMode: "normal",
 };
 
 const baseContext: ReplyGenerationContext = {
@@ -25,7 +26,13 @@ const baseContext: ReplyGenerationContext = {
   currentContext: { turns: [], usedTurnLimit: "full_chunk", needsUserQuestion: false },
   retrievedChunks: [],
   roomMemory: null,
-  participantProfiles: [{ kind: "preference", value: "민지는 커피를 좋아해" }],
+  participantProfiles: [{
+    id: "fact-preference",
+    kind: "preference",
+    value: "민지는 커피를 좋아해",
+    source: "user_confirmed",
+    locked: true,
+  }],
   currentFacts: ["민지는 커피를 좋아해"],
 };
 
@@ -125,7 +132,13 @@ test.each([
 ])("production fact validator rejects %s polarity conflicts", (_label, reviewedFact, candidateText) => {
   const context: ReplyGenerationContext = {
     ...baseContext,
-    participantProfiles: [{ kind: "reviewed_fact", value: reviewedFact }],
+    participantProfiles: [{
+      id: "fact-reviewed",
+      kind: "reviewed_fact",
+      value: reviewedFact,
+      source: "user_confirmed",
+      locked: true,
+    }],
     currentFacts: [reviewedFact],
   };
 
@@ -143,7 +156,10 @@ test("production fact validator retries contradictions with an opaque rule ID", 
 
   await expect(generateReplies(command, {
     gateway,
-    contextProvider: { load: async () => baseContext },
+    contextProvider: {
+      loadParticipantProfiles: async () => baseContext.participantProfiles,
+      load: async () => baseContext,
+    },
     factValidator: validatesReplyFact,
   })).resolves.toMatchObject({ kind: "replies" });
 

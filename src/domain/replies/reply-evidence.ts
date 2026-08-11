@@ -1,4 +1,5 @@
 export type ProfileEvidenceInput = {
+  id: string;
   kind: string;
   value: string;
   conditions?: string[];
@@ -24,13 +25,13 @@ function truncateCodePoints(value: string, limit: number): string {
 export function buildPersonalContextEvidence(
   profiles: ProfileEvidenceInput[],
 ): PersonalContextEvidence[] {
-  return profiles.map((profile, index) => {
+  return profiles.map((profile) => {
     const sections = [`${normalizeWhitespace(profile.kind)}: ${normalizeWhitespace(profile.value)}`];
     const conditions = summarizeList(profile.conditions);
     const exceptions = summarizeList(profile.exceptions);
     if (conditions) sections.push(`조건: ${conditions}`);
     if (exceptions) sections.push(`예외: ${exceptions}`);
-    return { id: `profile-${index}`, summary: truncateCodePoints(sections.join(" · "), 120) };
+    return { id: profile.id, summary: truncateCodePoints(sections.join(" · "), 120) };
   });
 }
 

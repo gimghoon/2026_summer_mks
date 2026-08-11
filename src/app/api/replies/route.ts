@@ -27,6 +27,7 @@ import { listProfileFacts } from "@/domain/profiles/profile-service";
 import {
   generateReplies,
   type GenerateRepliesCommand,
+  type ParticipantProfileContext,
 } from "@/domain/replies/reply-service";
 import {
   buildProductionReplyContext,
@@ -48,11 +49,32 @@ type StoredChunkMemory = {
   relationshipSignals?: string[];
 } | string;
 
+function participantProfileContexts(
+  facts: Awaited<ReturnType<typeof listProfileFacts>>,
+): ParticipantProfileContext[] {
+  return facts.map((fact) => ({
+    id: fact.id,
+    kind: fact.kind,
+    value: fact.value,
+    conditions: fact.conditions,
+    exceptions: fact.exceptions,
+    source: fact.source,
+    locked: fact.locked,
+  }));
+}
+
+async function productionParticipantProfiles(
+  command: GenerateRepliesCommand,
+): Promise<ParticipantProfileContext[]> {
+  return participantProfileContexts(await listProfileFacts(command.participantId));
+}
+
 async function productionContextSnapshot(
   command: GenerateRepliesCommand,
+  preloadedProfiles?: ParticipantProfileContext[],
 ): Promise<ProductionContextSnapshot> {
   const database = getDb();
-  const [storedTurns, storedChunks, memoryRows, roomParticipantRows, profileFacts] = await Promise.all([
+  const [storedTurns, storedChunks, memoryRows, roomParticipantRows, participantProfiles] = await Promise.all([
     database.select({
       id: turns.id,
       participantId: turns.participantId,
@@ -78,7 +100,7 @@ async function productionContextSnapshot(
       encryptedName: participants.encryptedName,
       isSelf: participants.isSelf,
     }).from(participants).where(eq(participants.roomId, command.roomId)),
-    listProfileFacts(command.participantId),
+    preloadedProfiles ?? productionParticipantProfiles(command),
   ]);
   const messageIds = storedTurns.flatMap((turn) => decryptJson<string[]>(turn.encryptedMessageIds));
   const storedMessages = messageIds.length === 0 ? [] : await database.select({
@@ -131,12 +153,7 @@ async function productionContextSnapshot(
       };
     }),
     roomMemory,
-    participantProfiles: profileFacts.map((fact) => ({
-      kind: fact.kind,
-      value: fact.value,
-      conditions: fact.conditions,
-      exceptions: fact.exceptions,
-    })),
+    participantProfiles,
   };
 }
 
@@ -144,12 +161,17 @@ async function replyContext(
   command: GenerateRepliesCommand,
   relationship: RelationshipStyle,
   gateway: OpenAIModelGateway,
+  snapshot: ProductionContextSnapshot,
+  preloadedProfiles?: ProductionContextSnapshot["participantProfiles"],
 ) {
   return buildProductionReplyContext(
     command,
     relationship,
     gateway,
-    await productionContextSnapshot(command),
+    {
+      ...snapshot,
+      participantProfiles: preloadedProfiles ?? snapshot.participantProfiles,
+    },
   );
 }
 
@@ -168,9 +190,30 @@ function productionDependencies(): ReplyRouteDependencies {
     },
     async generate(command, relationship) {
       const gateway = new OpenAIModelGateway();
+      let snapshotPromise: Promise<ProductionContextSnapshot> | undefined;
+      let preloadedProfiles: ParticipantProfileContext[] | undefined;
+      const loadSnapshot = (profiles?: ParticipantProfileContext[]) => {
+        snapshotPromise ??= productionContextSnapshot(command, profiles);
+        return snapshotPromise;
+      };
       return generateReplies(command, {
         gateway,
-        contextProvider: { load: (currentCommand) => replyContext(currentCommand, relationship, gateway) },
+        contextProvider: {
+          async loadParticipantProfiles(currentCommand) {
+            preloadedProfiles ??= await productionParticipantProfiles(currentCommand);
+            return preloadedProfiles;
+          },
+          async load(currentCommand, providedProfiles) {
+            const profiles = providedProfiles ?? preloadedProfiles;
+            return replyContext(
+              currentCommand,
+              relationship,
+              gateway,
+              await loadSnapshot(profiles),
+              profiles,
+            );
+          },
+        },
         factValidator: validatesReplyFact,
       });
     },

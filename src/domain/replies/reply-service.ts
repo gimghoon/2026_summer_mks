@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { RelationshipStyle, ReplyStrategy } from "@/db/schema";
+import type { ProfileFactSource, RelationshipStyle, ReplyStrategy } from "@/db/schema";
 import {
   ModelResponseValidationError,
   type ModelGateway,
@@ -58,13 +58,19 @@ export type GenerateRepliesCommand = {
   situation: string;
   intent: string;
   indirectness: IndirectnessLevel;
+  personalContextMode: PersonalContextMode;
 };
 
+export type PersonalContextMode = "normal" | "required";
+
 export type ParticipantProfileContext = {
+  id: string;
   kind: string;
   value: string;
   conditions?: string[];
   exceptions?: string[];
+  source: ProfileFactSource;
+  locked: boolean;
 };
 
 export type ReplyGenerationContext = {
@@ -78,7 +84,13 @@ export type ReplyGenerationContext = {
 };
 
 export interface ReplyContextProvider {
-  load(command: GenerateRepliesCommand): Promise<ReplyGenerationContext>;
+  loadParticipantProfiles(
+    command: GenerateRepliesCommand,
+  ): Promise<ParticipantProfileContext[]>;
+  load(
+    command: GenerateRepliesCommand,
+    preloadedProfiles?: ParticipantProfileContext[],
+  ): Promise<ReplyGenerationContext>;
 }
 
 export type ReplyFactValidator = (

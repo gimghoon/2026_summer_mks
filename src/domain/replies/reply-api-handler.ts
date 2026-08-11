@@ -121,6 +121,7 @@ export function createReplyPostHandler(dependencies: ReplyRouteDependencies) {
       situation: body.situation,
       intent: body.intent,
       indirectness: (body.indirectness as IndirectnessLevel | undefined) ?? DEFAULT_INDIRECTNESS,
+      personalContextMode: "normal",
     };
     try {
       const relationship = body.relationship ?? participant.relationship;
