@@ -172,3 +172,56 @@ test("production fact validator retries contradictions with an opaque rule ID", 
   expect(JSON.parse(retryInput).validationRuleIds).toEqual(["FACT_CONTRADICTION"]);
   expect(retryInput).not.toContain("민지는 커피를 싫어해");
 });
+
+test("required production validation gives only the selected trusted tier profile authority", async () => {
+  const trustedFact = {
+    id: "fact-user-edited",
+    kind: "preference",
+    value: "민지는 커피를 좋아해",
+    source: "user_edited" as const,
+    locked: true,
+  };
+  const excludedInference = {
+    id: "fact-ai-inference",
+    kind: "preference",
+    value: "PRIVATE_EXCLUDED_INFERENCE 민지는 커피를 싫어해 ㅋㅋ",
+    source: "ai_inference" as const,
+    locked: false,
+  };
+  const reviewedCurrentFact = "REVIEWED_CURRENT_FACT 오늘 만날 장소는 카페다";
+  const requiredContext: ReplyGenerationContext = {
+    ...baseContext,
+    participantProfiles: [trustedFact, excludedInference],
+    currentFacts: [reviewedCurrentFact],
+  };
+  const gateway = new FakeGateway([{
+    candidates: [
+      { strategy: "relationship_soft", text: "민지는 커피를 좋아하니까 카페에서 보자", intentLabel: "관계 유지", riskLabel: null, contextBasisIds: [trustedFact.id] },
+      { strategy: "emotion_signal", text: "카페에서 편하게 이야기하면 좋겠어", intentLabel: "감정 전달", riskLabel: null, contextBasisIds: [trustedFact.id] },
+      { strategy: "clearer_request", text: "오늘은 카페에서 만나자", intentLabel: "요청", riskLabel: null, contextBasisIds: [trustedFact.id] },
+    ],
+  }]);
+
+  const result = await generateReplies({ ...command, personalContextMode: "required" }, {
+    gateway,
+    contextProvider: {
+      loadParticipantProfiles: async () => requiredContext.participantProfiles,
+      load: async () => requiredContext,
+    },
+    factValidator: validatesReplyFact,
+    personalContextUsageValidator: async () => ({
+      relationship_soft: true,
+      emotion_signal: true,
+      clearer_request: true,
+    }),
+  });
+
+  expect(result.kind).toBe("replies");
+  expect(gateway.requests).toHaveLength(1);
+  expect(gateway.requests[0]!.input).toContain(trustedFact.value);
+  expect(gateway.requests[0]!.input).toContain(reviewedCurrentFact);
+  expect(gateway.requests[0]!.input).not.toContain(excludedInference.value);
+  const policyJson = gateway.requests[0]!.system.match(/Policy: (\{.*?\}) For every/u)?.[1];
+  expect(policyJson).toBeDefined();
+  expect(JSON.parse(policyJson!).allowedDevices).not.toContain("laughter");
+});

@@ -89,7 +89,7 @@ export type ReplyGenerationContext = {
   retrievedChunks: RetrievedChunk[];
   roomMemory: string | null;
   participantProfiles: ParticipantProfileContext[];
-  /** Optional reviewed facts that a production adapter can validate more strictly. */
+  /** Optional reviewed non-profile facts that a production adapter can validate more strictly. */
   currentFacts?: string[];
 };
 
@@ -459,6 +459,36 @@ function semanticUsageCandidates(
   })) as Parameters<PersonalContextUsageValidator>[0];
 }
 
+function semanticUsageGrounding(
+  command: GenerateRepliesCommand,
+  context: ReplyGenerationContext,
+): Parameters<PersonalContextUsageValidator>[1] {
+  return {
+    situation: command.situation,
+    intent: command.intent,
+    currentTurns: context.currentContext.turns.map((turn) => ({
+      speakerId: turn.speakerId,
+      messages: turn.messages.map((message) => ({ kind: message.kind, text: message.text })),
+    })),
+  };
+}
+
+function requiredValidationContext(
+  context: ReplyGenerationContext,
+  allowedProfiles: ParticipantProfileContext[],
+): ReplyGenerationContext {
+  const profileTexts = new Set(context.participantProfiles.flatMap((profile) => [
+    profile.value,
+    ...(profile.conditions ?? []),
+    ...(profile.exceptions ?? []),
+  ]));
+  return {
+    ...context,
+    participantProfiles: allowedProfiles,
+    currentFacts: (context.currentFacts ?? []).filter((fact) => !profileTexts.has(fact)),
+  };
+}
+
 function unverifiedProfileWarning(
   candidate: GeneratedReply["candidates"][number],
   inferenceOnly: boolean,
@@ -494,6 +524,9 @@ export class ReplyService {
     }
 
     const evidenceProfiles = requiredSelection?.facts ?? context.participantProfiles;
+    const validationContext = requiredSelection
+      ? requiredValidationContext(context, evidenceProfiles)
+      : context;
     const memoryTexts = [
       context.roomMemory ?? "",
       ...evidenceProfiles.flatMap((profile) => [
@@ -526,9 +559,8 @@ export class ReplyService {
             indirectness: command.indirectness,
             relationship: context.relationship,
             context: modelContext(
-              context,
+              validationContext,
               evidenceProfiles,
-              requiredSelection ? [] : context.currentFacts ?? [],
             ),
             personalContextEvidence,
             validationRuleIds,
@@ -555,7 +587,7 @@ export class ReplyService {
       const candidateValidationResults = await validateCandidates(
         candidateContents,
         command,
-        context,
+        validationContext,
         policy,
         this.dependencies.factValidator,
       );
@@ -574,6 +606,7 @@ export class ReplyService {
             generated.candidates[1]!,
             generated.candidates[2]!,
           ], evidenceProfiles),
+          semanticUsageGrounding(command, validationContext),
         );
         if (generated.candidates.some((candidate) => !reflected[candidate.strategy])) {
           validationRuleIds = ["PERSONAL_CONTEXT_NOT_REFLECTED"];

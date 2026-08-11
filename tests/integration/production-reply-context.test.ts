@@ -118,6 +118,7 @@ test("preserves profile identity and provenance in the production reply context"
     source: "user_confirmed",
     locked: true,
   }]);
+  expect(context.currentFacts).toBeUndefined();
 });
 
 test("required selection excludes profile change proposals", () => {

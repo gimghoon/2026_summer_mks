@@ -95,11 +95,24 @@ test("covers verified, inferred, unavailable, remembered mode, clarification, an
   const recovery = page.getByRole("main");
   await expect(recovery.getByRole("heading", { name: "프로필을 먼저 확인해 주세요" })).toBeVisible();
   await expect(recovery.getByText(PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE, { exact: true })).toBeVisible();
+  const composerUrl = page.url();
+  const profilePopupPromise = page.waitForEvent("popup");
   await recovery.getByRole("link", { name: "프로필 확인하기" }).click();
-  await expect(page.getByRole("heading", { name: "추정은 같이 확인해요" })).toBeVisible();
-  await expect(page.getByText("유나 프로필 검수", { exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "분석된 프로필 사실" }))
+  const profilePopup = await profilePopupPromise;
+  await expect(page).toHaveURL(composerUrl);
+  await expect(page.getByLabel("최근 대화")).toHaveValue("민수: 미안 오늘도 조금 늦을 것 같아\n나: 알겠어");
+  await expect(page.getByLabel("현재 상황")).toHaveValue("또 늦어서 서운하지만 싸우고 싶지는 않아");
+  await expect(page.getByLabel("답장 의도")).toHaveValue("관계를 부드럽게 유지하고 싶어요");
+  await expect(page.getByRole("checkbox", { name: "개인 컨텍스트 강제 반영" })).toBeChecked();
+  expect(await profilePopup.evaluate(() => window.opener)).toBeNull();
+  await expect(profilePopup.getByRole("heading", { name: "추정은 같이 확인해요" })).toBeVisible();
+  await expect(profilePopup.getByText("유나 프로필 검수", { exact: true })).toBeVisible();
+  await expect(profilePopup.getByRole("region", { name: "분석된 프로필 사실" }))
     .toContainText("아직 추정된 항목이 없어요");
+  await profilePopup.close();
+
+  await page.getByRole("button", { name: "답장 3개 만들기" }).click();
+  await expect(recovery.getByText(PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE, { exact: true })).toBeVisible();
 
   const deletionStatus = await page.evaluate(async (id) => (
     fetch(`/api/rooms/${id}`, { method: "DELETE" }).then((response) => response.status)

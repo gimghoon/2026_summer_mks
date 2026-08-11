@@ -29,6 +29,15 @@ const candidates: [
   },
 ];
 
+const grounding = {
+  situation: "답이 늦어서 조금 서운하다",
+  intent: "다음에는 미리 알려 달라고 요청한다",
+  currentTurns: [{
+    speakerId: "participant-1",
+    messages: [{ kind: "text" as const, text: "오늘 답이 늦어서 미안해" }],
+  }],
+};
+
 test("checks all three selected-fact uses in one ordered extraction", async () => {
   const requests: StructuredModelRequest<unknown>[] = [];
   const validator = createPersonalContextUsageValidator({
@@ -44,14 +53,18 @@ test("checks all three selected-fact uses in one ordered extraction", async () =
     },
   });
 
-  await expect(validator(candidates)).resolves.toEqual({
+  await expect(validator(candidates, grounding)).resolves.toEqual({
     relationship_soft: true,
     emotion_signal: false,
     clearer_request: true,
   });
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({ purpose: "reply", schemaName: "personal_context_usage_check" });
-  expect(JSON.parse(requests[0]!.input)).toEqual({ candidates });
+  expect(JSON.parse(requests[0]!.input)).toEqual({ candidates, grounding });
+  expect(requests[0]!.system).toContain("not grounded");
+  expect(requests[0]!.system).toContain("false");
+  expect(requests[0]!.input).not.toContain("retrievedHistory");
+  expect(requests[0]!.input).not.toContain("roomMemory");
 });
 
 test("rejects a syntactically valid response with strategies in the wrong order", async () => {
@@ -67,5 +80,5 @@ test("rejects a syntactically valid response with strategies in the wrong order"
     },
   });
 
-  await expect(validator(candidates)).rejects.toBeInstanceOf(ModelResponseValidationError);
+  await expect(validator(candidates, grounding)).rejects.toBeInstanceOf(ModelResponseValidationError);
 });

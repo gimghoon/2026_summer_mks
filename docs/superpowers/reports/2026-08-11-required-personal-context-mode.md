@@ -1,5 +1,32 @@
 # Required personal context mode implementation report
 
+## Tasks 1–4 RED/GREEN evidence
+
+### Task 1 — eligible evidence and stable basis IDs
+
+- RED: `pnpm exec vitest run tests/unit/required-personal-context.test.ts tests/unit/reply-evidence.test.ts` exited 1. Three evidence assertions failed because IDs were positional, and the selector module import was unresolved.
+- GREEN: the same command exited 0 with 2 files and 7 tests passed.
+- Focused regression: `pnpm exec vitest run tests/unit/required-personal-context.test.ts tests/unit/reply-evidence.test.ts tests/integration/reply-service.test.ts tests/integration/production-reply-context.test.ts tests/integration/reply-production-policy.test.ts` exited 0 with 5 files and 77 tests passed; `pnpm exec tsc --noEmit` exited 0.
+- Full verification at the Task 1 commit: `pnpm test` passed 28 files / 166 tests; `pnpm run test:integration` passed 13 files / 132 tests; `git diff --check` exited 0.
+
+### Task 2 — required evidence and batched semantic reflection
+
+- RED: `pnpm exec vitest run tests/integration/reply-service.test.ts` exited 1 with 9 failed / 47 passed (56 total). The intended failures covered no-fact preflight, basis retry, semantic validation, inference warning, and second semantic failure handling.
+- GREEN: `pnpm exec vitest run tests/unit/personal-context-usage-validator.test.ts tests/integration/reply-service.test.ts tests/integration/reply-production-policy.test.ts` exited 0 with 3 files and 74 tests passed; `pnpm exec tsc --noEmit` exited 0.
+- Full verification at the Task 2 commit: `pnpm test` passed 29 files / 168 tests; `pnpm test:integration` passed 13 files / 143 tests; `git diff --check` exited 0.
+
+### Task 3 — API, persistence, production profile, and migration contracts
+
+- RED: `pnpm exec vitest run tests/integration/replies-route.test.ts tests/integration/production-reply-context.test.ts tests/unit/schema-contract.test.ts tests/integration/private-workflow-security.test.ts` exited 1 with 2 failed / 2 passed files and 3 failed / 39 passed tests (42 total). Required mode was rejected at the API boundary, typed unavailable did not reach 409, and the schema lacked `personalContextMode`.
+- GREEN: the same focused command exited 0 with 4 files and 42 tests passed.
+- Migration and full verification: `pnpm exec drizzle-kit check --config=drizzle.config.ts` exited 0 with `Everything's fine`; `pnpm exec tsc --noEmit` exited 0; `pnpm test` passed 29 files / 169 tests; `pnpm test:integration` passed 13 files / 149 tests; `git diff --check` exited 0.
+
+### Task 4 — remembered composer control and recovery UI
+
+- RED: `pnpm exec vitest run tests/unit/reply-composer.test.tsx tests/unit/reply-results.test.tsx` exited 1 with 5 intended failures covering the missing checkbox/request mode, typed 409 recovery, and inference warning copy.
+- GREEN: the same command exited 0 with 2 files and 15 tests passed.
+- Full verification at the Task 4 commit: `pnpm exec tsc --noEmit` and `pnpm build` exited 0; `pnpm test` passed 29 files / 174 tests; `pnpm test:integration` passed 13 files / 149 tests.
+
 ## Scope and behavior
 
 Task 5 aligns the non-production browser fixture with the production `GenerateRepliesCommand` and `ReplyGenerationResult` contract. The fixture remains gated by `NODE_ENV !== "production"` and `E2E_FIXTURE_MODE === "1"`. Required mode now calls the shared `selectRequiredPersonalContext` selector, returns the typed unavailable result before storage when no eligible fact exists, generates three deterministic strategy-distinct texts that apply the selected fact meaning without copying its stored statement, resolves public evidence through the shared evidence helpers, and warns every AI-inference-only candidate.

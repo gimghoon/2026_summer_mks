@@ -282,6 +282,105 @@ test("checks all three required candidates in one semantic call and retries opaq
     .not.toContain("PRIVATE_TRUSTED_VALUE");
 });
 
+test("retries a conditional use that invents an ungrounded state", async () => {
+  const conditionalFacts = [profile({
+    id: "conditional-id",
+    value: "상대 상태를 단정하지 않고 질문한다",
+    conditions: ["상대가 피곤하다고 말했을 때는 휴식을 권한다"],
+    source: "user_edited",
+    locked: true,
+  })];
+  const semantic = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>(
+    async (semanticCandidates, grounding) => ({
+      relationship_soft: !semanticCandidates[0].text.includes("피곤")
+        || JSON.stringify(grounding).includes("피곤"),
+      emotion_signal: true,
+      clearer_request: true,
+    }),
+  );
+  const gateway = new FakeGateway([
+    candidates([
+      "피곤해 보이니까 오늘은 푹 쉬어",
+      "오늘 답이 늦어서 조금 아쉬웠어",
+      "다음에는 늦을 때 미리 알려줘",
+    ], [["conditional-id"], ["conditional-id"], ["conditional-id"]]),
+    candidates([
+      "무슨 일 있었는지 물어봐도 될까",
+      "오늘 답이 늦어서 조금 아쉬웠어",
+      "다음에는 늦을 때 미리 알려줘",
+    ], [["conditional-id"], ["conditional-id"], ["conditional-id"]]),
+  ]);
+
+  const result = await generateReplies(
+    { ...command, personalContextMode: "required" },
+    dependencies(gateway, {
+      contextProvider: {
+        loadParticipantProfiles: async () => conditionalFacts,
+        load: async (_command, preloadedProfiles) => ({
+          ...context,
+          participantProfiles: preloadedProfiles ?? conditionalFacts,
+        }),
+      },
+      personalContextUsageValidator: semantic,
+    }),
+  );
+
+  expect(result.kind).toBe("replies");
+  expect(semantic).toHaveBeenCalledTimes(2);
+  expect(semantic.mock.calls[0]![1]).toEqual({
+    situation: command.situation,
+    intent: command.intent,
+    currentTurns: [{
+      speakerId: "participant-1",
+      messages: [{ kind: "text", text: "오늘 답이 늦어서 미안해" }],
+    }],
+  });
+  expect(JSON.parse(gateway.requests[1]!.input).validationRuleIds)
+    .toEqual(["PERSONAL_CONTEXT_NOT_REFLECTED"]);
+});
+
+test("accepts a conditional use when the selected current situation grounds it", async () => {
+  const groundedCommand = {
+    ...command,
+    situation: "상대가 오늘 피곤하다고 말해서 쉬도록 배려하고 싶다",
+    personalContextMode: "required" as const,
+  };
+  const conditionalFacts = [profile({
+    id: "conditional-id",
+    value: "상대가 피곤할 때는 짧게 휴식을 권한다",
+    conditions: ["상대가 피곤하다고 말했을 때"],
+    source: "user_edited",
+    locked: true,
+  })];
+  const semantic = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>(
+    async (_semanticCandidates, grounding) => ({
+      relationship_soft: JSON.stringify(grounding).includes("피곤"),
+      emotion_signal: true,
+      clearer_request: true,
+    }),
+  );
+  const gateway = new FakeGateway([candidates([
+    "피곤하다 했으니 오늘은 푹 쉬어",
+    "오늘 많이 지쳤겠다, 편히 쉬어",
+    "오늘은 쉬고 내일 이야기하자",
+  ], [["conditional-id"], ["conditional-id"], ["conditional-id"]])]);
+
+  const result = await generateReplies(groundedCommand, dependencies(gateway, {
+    contextProvider: {
+      loadParticipantProfiles: async () => conditionalFacts,
+      load: async (_command, preloadedProfiles) => ({
+        ...context,
+        participantProfiles: preloadedProfiles ?? conditionalFacts,
+      }),
+    },
+    personalContextUsageValidator: semantic,
+  }));
+
+  expect(result.kind).toBe("replies");
+  expect(gateway.requests).toHaveLength(1);
+  expect(semantic).toHaveBeenCalledTimes(1);
+});
+
 test("uses independent selected fact IDs per required strategy", async () => {
   const facts = [
     profile({ id: "trusted-a", value: "A", source: "user_confirmed", locked: true }),

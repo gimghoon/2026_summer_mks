@@ -42,9 +42,9 @@ function hasFactAnchor(left: string, right: string): boolean {
 
 function knownFactTexts(context: ReplyGenerationContext): string[] {
   return [
-    // `currentFacts` is populated only from reviewed structured profile facts
-    // by the production adapter. Raw conversation remains model context, not
-    // an authority capable of invalidating a generated reply.
+    // `currentFacts` is reserved for separately reviewed non-profile facts.
+    // Raw conversation remains model context, not an authority capable of
+    // invalidating a generated reply.
     ...(context.currentFacts ?? []),
     ...context.participantProfiles.flatMap((profile) => [
       profile.value,

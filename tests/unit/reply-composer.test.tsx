@@ -53,22 +53,37 @@ test("sends required personal context mode when enforcement is checked", async (
 });
 
 test("shows a profile recovery action when required personal context is unavailable", async () => {
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-    ok: false,
-    status: 409,
-    json: async () => ({
-      kind: "personal_context_unavailable",
-      message: "사용할 개인 컨텍스트가 없어요. 프로필을 먼저 확인하거나 직접 추가해 주세요.",
-    }),
-  }));
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        kind: "personal_context_unavailable",
+        message: "사용할 개인 컨텍스트가 없어요. 프로필을 먼저 확인하거나 직접 추가해 주세요.",
+      }),
+    })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ candidates: replyCandidates }) });
+  vi.stubGlobal("fetch", fetchMock);
   render(<ReplyComposer roomId="r1" participantId="p1" />);
 
   fillRequiredFields();
   fireEvent.click(screen.getByRole("button", { name: "답장 3개 만들기" }));
   expect(await screen.findByText("사용할 개인 컨텍스트가 없어요. 프로필을 먼저 확인하거나 직접 추가해 주세요.")).toBeVisible();
-  expect(screen.getByRole("link", { name: "프로필 확인하기" })).toHaveAttribute("href", "/rooms/r1/profiles/p1");
+  const recoveryLink = screen.getByRole("link", { name: "프로필 확인하기" });
+  expect(recoveryLink).toHaveAttribute("href", "/rooms/r1/profiles/p1");
+  expect(recoveryLink).toHaveAttribute("target", "_blank");
+  expect(recoveryLink).toHaveAttribute("rel", "noopener noreferrer");
   expect(screen.getByLabelText("최근 대화")).toHaveValue("민수: 미안 늦었어");
   expect(screen.getByLabelText("현재 상황")).toHaveValue("늦어서 서운해");
+
+  fireEvent.click(screen.getByRole("button", { name: "답장 3개 만들기" }));
+  await screen.findAllByTestId("reply-candidate");
+  expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toMatchObject({
+    pastedConversation: "민수: 미안 늦었어",
+    situation: "늦어서 서운해",
+    intent: "관계를 부드럽게 유지하고 싶어요",
+    personalContextMode: "normal",
+  });
 });
 
 test("uses saved indirectness and allows a one-request override", () => {

@@ -234,6 +234,5 @@ export async function buildProductionReplyContext(
     retrievedChunks,
     roomMemory: snapshot.roomMemory,
     participantProfiles: snapshot.participantProfiles,
-    currentFacts: snapshot.participantProfiles.map((profile) => profile.value),
   };
 }
