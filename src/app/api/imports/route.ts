@@ -5,7 +5,10 @@ import {
   MAX_IMPORT_FILE_BYTES,
   MAX_IMPORT_REQUEST_BYTES,
 } from "@/domain/imports/import-limits";
-import { importKakaoExport } from "@/domain/imports/import-service";
+import {
+  importKakaoExport,
+  UnsupportedKakaoExportError,
+} from "@/domain/imports/import-service";
 import { parseKakaoExport } from "@/domain/kakao/parser";
 import {
   fixtureModeEnabled,
@@ -102,7 +105,13 @@ export async function POST(request: Request): Promise<Response> {
 
   const rawText = await file.text();
   const parsed = parseKakaoExport(rawText);
-  const title = parsed.title || file.name.replace(/\.txt$/i, "");
+  const title = parsed.title || file.name.replace(/\.(?:txt|csv)$/i, "");
+  if (parsed.messages.length === 0) {
+    return Response.json(
+      { error: "지원하는 카카오톡 대화 형식이 아니거나 메시지가 없어요." },
+      { status: 400 },
+    );
+  }
   if (!title) {
     return Response.json({ error: "Invalid import request", issues: { formErrors: ["conversation title is required"] } }, { status: 400 });
   }
@@ -123,6 +132,12 @@ export async function POST(request: Request): Promise<Response> {
         existingRoomId: form.data.existingRoomId,
       });
   } catch (error) {
+    if (error instanceof UnsupportedKakaoExportError) {
+      return Response.json(
+        { error: "지원하는 카카오톡 대화 형식이 아니거나 메시지가 없어요." },
+        { status: 400 },
+      );
+    }
     if (error instanceof Error && error.message === "Room not found") {
       return new Response("Not found", { status: 404 });
     }

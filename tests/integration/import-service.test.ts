@@ -134,6 +134,18 @@ test("imports encrypted messages once when an existing room is re-imported", asy
   expect(repository.persistedTurns.every((turn) => !turn.encryptedMessageIds.includes("message-"))).toBe(true);
 });
 
+test("rejects an unsupported export before opening an import transaction", async () => {
+  const repository = new InMemoryImportRepository();
+  const transaction = vi.spyOn(repository, "transaction");
+
+  await expect(importKakaoExport({
+    title: "지원하지 않는 파일",
+    selfName: "지훈",
+    rawText: "Date,User,Other\n2026-08-07 09:01:02,민수,안녕",
+  }, repository)).rejects.toThrow("No valid KakaoTalk messages");
+  expect(transaction).not.toHaveBeenCalled();
+});
+
 test("replaces neighboring turns when a late middle message creates new boundaries", async () => {
   const repository = new InMemoryImportRepository();
   const initial = [

@@ -3,9 +3,11 @@
 import { hash } from "@node-rs/argon2";
 
 const importKakaoExportMock = vi.hoisted(() => vi.fn());
+const UnsupportedKakaoExportErrorMock = vi.hoisted(() => class UnsupportedKakaoExportError extends Error {});
 
 vi.mock("@/domain/imports/import-service", () => ({
   importKakaoExport: importKakaoExportMock,
+  UnsupportedKakaoExportError: UnsupportedKakaoExportErrorMock,
 }));
 
 import { POST } from "@/app/api/imports/route";
@@ -33,7 +35,13 @@ afterEach(() => vi.unstubAllEnvs());
 const multipartBoundary = "import-boundary";
 const encoder = new TextEncoder();
 
-function multipartBody(selfName: string | undefined, file: Uint8Array, existingRoomId?: string): ArrayBuffer {
+function multipartBody(
+  selfName: string | undefined,
+  file: Uint8Array,
+  existingRoomId?: string,
+  filename = "chat.txt",
+  contentType = "text/plain",
+): ArrayBuffer {
   const parts: Uint8Array[] = [];
   if (selfName !== undefined) {
     parts.push(encoder.encode(
@@ -46,7 +54,7 @@ function multipartBody(selfName: string | undefined, file: Uint8Array, existingR
     ));
   }
   parts.push(encoder.encode(
-    `--${multipartBoundary}\r\nContent-Disposition: form-data; name="file"; filename="chat.txt"\r\nContent-Type: text/plain\r\n\r\n`,
+    `--${multipartBoundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`,
   ));
   parts.push(file, encoder.encode(`\r\n--${multipartBoundary}--\r\n`));
   const totalBytes = parts.reduce((total, part) => total + part.byteLength, 0);
@@ -142,6 +150,52 @@ test("passes a validated existing room UUID to the import service", async () => 
 
   expect(response.status).toBe(201);
   expect(importKakaoExportMock).toHaveBeenCalledWith(expect.objectContaining({ existingRoomId }));
+});
+
+test("accepts a valid CSV and removes the csv extension from the room title", async () => {
+  importKakaoExportMock.mockResolvedValue({
+    roomId: "11111111-1111-4111-8111-111111111111",
+    insertedMessages: 1,
+    duplicateMessages: 0,
+    unparsedLines: [],
+  });
+  const csv = encoder.encode("Date,User,Message\n2026-08-07 09:01:02,민수,안녕");
+  const response = await POST(await authenticatedRequest(
+    multipartBody("지훈", csv, undefined, "목요일 모임.csv", "text/csv"),
+  ));
+
+  expect(response.status).toBe(201);
+  expect(importKakaoExportMock).toHaveBeenCalledWith(expect.objectContaining({
+    title: "목요일 모임",
+    rawText: expect.stringContaining("Date,User,Message"),
+  }));
+});
+
+test("returns 400 without importing when no valid messages are parsed", async () => {
+  const body = multipartBody(
+    "지훈",
+    encoder.encode("Date,User,Other\n2026-08-07 09:01:02,민수,안녕"),
+    undefined,
+    "unsupported.csv",
+    "text/csv",
+  );
+  const response = await POST(await authenticatedRequest(body));
+
+  expect(response.status).toBe(400);
+  expect(importKakaoExportMock).not.toHaveBeenCalled();
+});
+
+test("returns 400 when the import service rejects an unsupported export", async () => {
+  importKakaoExportMock.mockRejectedValue(new UnsupportedKakaoExportErrorMock());
+  const response = await POST(await authenticatedRequest(multipartBody(
+    "지훈",
+    encoder.encode("민수와 카카오톡 대화\n2026년 8월 7일 오전 9:01, 민수 : 안녕"),
+  )));
+
+  expect(response.status).toBe(400);
+  await expect(response.json()).resolves.toEqual({
+    error: "지원하는 카카오톡 대화 형식이 아니거나 메시지가 없어요.",
+  });
 });
 
 test("rejects a malformed existing room ID before import", async () => {

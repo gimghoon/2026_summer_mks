@@ -25,6 +25,13 @@ export type ImportCommand = {
   existingRoomId?: string;
 };
 
+export class UnsupportedKakaoExportError extends Error {
+  constructor() {
+    super("No valid KakaoTalk messages");
+    this.name = "UnsupportedKakaoExportError";
+  }
+}
+
 export type StoredMessage = ParsedMessageWithFingerprint & {
   id: string;
   participantId: string;
@@ -259,6 +266,7 @@ export async function importKakaoExport(
   repository: ImportRepository = createDrizzleImportRepository(),
 ): Promise<ImportSummary> {
   const parsed = parseKakaoExport(command.rawText);
+  if (parsed.messages.length === 0) throw new UnsupportedKakaoExportError();
   const title = command.title.trim() || parsed.title;
   const selfName = command.selfName.trim();
   if (!title) throw new Error("Conversation title is required");
