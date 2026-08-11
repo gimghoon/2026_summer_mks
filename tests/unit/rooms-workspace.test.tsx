@@ -11,6 +11,29 @@ beforeEach(() => {
   refreshMock.mockReset();
 });
 
+test("offers both KakaoTalk txt and csv files", () => {
+  render(<RoomsWorkspace initialRooms={[]} />);
+
+  const input = screen.getByLabelText("카카오톡 파일 업로드");
+  expect(input).toHaveAttribute("accept", ".txt,.csv,text/plain,text/csv");
+  expect(screen.getByText("카카오톡 .txt 또는 .csv 파일 선택")).toBeVisible();
+});
+
+test("explains both supported formats when an import fails", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+  render(<RoomsWorkspace initialRooms={[]} />);
+  fireEvent.change(screen.getByLabelText("카카오톡 파일 업로드"), {
+    target: { files: [new File(["대화"], "kakao.csv", { type: "text/csv" })] },
+  });
+  fireEvent.change(screen.getByLabelText("내 이름"), { target: { value: "나" } });
+  fireEvent.click(screen.getByRole("button", { name: "파일 가져오기" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "대화를 가져오지 못했어요. 카카오톡 .txt 또는 .csv 파일과 내 이름을 다시 확인해 주세요.",
+  );
+  vi.unstubAllGlobals();
+});
+
 test("shows unparsed import lines before analysis can continue", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ roomId: "room-1", unparsedLines: [{ line: 9, text: "형식을 확인해 주세요" }] }) }));
   render(<RoomsWorkspace initialRooms={[]} />);
