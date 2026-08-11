@@ -262,7 +262,8 @@ function fixtureDependencies(): ReplyRouteDependencies {
     },
     async persist() {
       // The fixture generator stores encrypted request and candidate payloads
-      // in its in-memory adapter before returning the browser response.
+      // in its in-memory adapter before returning the browser response. Typed
+      // unavailable results return before storage and never reach this hook.
     },
     log: safeLog,
   };

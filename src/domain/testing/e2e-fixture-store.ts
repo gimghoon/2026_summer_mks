@@ -1,8 +1,21 @@
 import { randomUUID } from "node:crypto";
 
 import type { ProfileFactView } from "@/domain/profiles/profile-service";
-import type { ReplyCandidate } from "@/domain/replies/reply-service";
-import { NO_PERSONAL_CONTEXT_BASIS } from "@/domain/replies/reply-evidence";
+import {
+  buildPersonalContextEvidence,
+  NO_PERSONAL_CONTEXT_BASIS,
+  resolveContextBasis,
+} from "@/domain/replies/reply-evidence";
+import {
+  PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE,
+  selectRequiredPersonalContext,
+} from "@/domain/replies/required-personal-context";
+import type {
+  GenerateRepliesCommand,
+  ParticipantProfileContext,
+  ReplyCandidate,
+  ReplyGenerationResult,
+} from "@/domain/replies/reply-service";
 import type { IndirectnessLevel } from "@/domain/replies/style-policy";
 import type { RoomView } from "@/domain/rooms/room-read-types";
 import { decryptJson, encryptJson } from "@/domain/crypto/encrypted-json";
@@ -37,6 +50,7 @@ type FixtureReplyRequest = {
   encryptedPastedConversation: string;
   encryptedSituation: string;
   encryptedIntent: string;
+  encryptedPersonalContextMode: string;
   encryptedCandidates: string[];
 };
 
@@ -56,6 +70,7 @@ type FixtureRoom = {
 type FixtureState = { rooms: Map<string, FixtureRoom> };
 
 const fixtureStateSymbol = Symbol.for("private-reply-assistant.e2e-fixture-state");
+const emptyProfileParticipantName = "유나";
 
 function state(): FixtureState {
   const fixtureGlobal = globalThis as typeof globalThis & { [fixtureStateSymbol]?: FixtureState };
@@ -185,8 +200,21 @@ export function analyzeFixtureRoom(roomId: string): { updatedChunks: number } | 
   if (!room) return null;
   room.encryptedChunks = [encryptJson({ analysisComplete: true, summary: "친근한 일상 대화" })];
   room.encryptedMemory = encryptJson({ version: 1, summary: "친근하게 농담을 주고받는 대화방" });
+  if (!room.participants.some((participant) => (
+    decryptJson<string>(participant.encryptedName) === emptyProfileParticipantName
+  ))) {
+    room.participants.push({
+      id: randomUUID(),
+      encryptedName: encryptJson(emptyProfileParticipantName),
+      isSelf: false,
+      relationshipStyle: "female_friend",
+    });
+  }
   if (room.facts.length === 0) {
-    room.facts.push(...room.participants.filter((entry) => !entry.isSelf).map((participant) => ({
+    room.facts.push(...room.participants.filter((entry) => (
+      !entry.isSelf
+        && decryptJson<string>(entry.encryptedName) !== emptyProfileParticipantName
+    )).map((participant) => ({
       id: randomUUID(),
       participantId: participant.id,
       kind: "personality_tendency" as const,
@@ -307,28 +335,60 @@ function fixtureCandidatesFor(indirectness: IndirectnessLevel): FixtureReplyCand
   return fixtureCandidates.map((candidate) => ({ ...candidate, warnings: [...warnings] })) as FixtureReplyCandidates;
 }
 
-export function generateFixtureReplies(input: {
-  roomId: string;
-  participantId: string;
-  pastedConversation: string;
-  situation: string;
-  intent: string;
-  indirectness: IndirectnessLevel;
-}): { kind: "clarification_required"; question: string } | { kind: "replies"; candidates: FixtureReplyCandidates } {
-  if (input.situation.includes("맥락이 부족해") && !input.situation.includes("추가 설명:")) {
+function requiredFixtureCandidates(
+  facts: ParticipantProfileContext[],
+  inferenceOnly: boolean,
+  indirectness: IndirectnessLevel,
+): FixtureReplyCandidates {
+  const evidence = buildPersonalContextEvidence(facts);
+  const inferenceWarnings = inferenceOnly ? ["unverified_profile_context" as const] : [];
+  const reflectFact = [
+    (value: string) => `“${value}”라는 점을 생각해서 부드럽게 말할게. 다음에는 늦을 것 같으면 살짝만 알려줘 ㅎㅎ`,
+    (value: string) => `“${value}”라는 점을 떠올리면, 그래도 기다리면서 조금 아쉽긴 했어~`,
+    (value: string) => `“${value}”라는 점은 이해하지만, 다음부터 늦을 때는 미리 한마디 부탁해`,
+  ] as const;
+  return fixtureCandidatesFor(indirectness).map((candidate, index) => {
+    const fact = facts[index % facts.length]!;
+    return {
+      ...candidate,
+      text: reflectFact[index]!(fact.value),
+      contextBasis: resolveContextBasis([fact.id], evidence),
+      warnings: [...candidate.warnings, ...inferenceWarnings],
+    };
+  }) as FixtureReplyCandidates;
+}
+
+function needsFixtureClarification(input: GenerateRepliesCommand): boolean {
+  return input.situation.includes("맥락이 부족해") && !input.situation.includes("추가 설명:");
+}
+
+export function generateFixtureReplies(input: GenerateRepliesCommand): ReplyGenerationResult {
+  if (input.personalContextMode === "normal" && needsFixtureClarification(input)) {
     return { kind: "clarification_required", question: "어떤 약속 때문에 서운한지 한 가지만 알려줄래요?" };
   }
   const room = state().rooms.get(input.roomId);
   if (!room || !fixtureParticipantBelongsToRoom(input.roomId, input.participantId)) {
     throw new Error("Fixture room participant not found");
   }
-  const candidates = fixtureCandidatesFor(input.indirectness);
+  const requiredSelection = input.personalContextMode === "required"
+    ? selectRequiredPersonalContext(listFixtureProfileFacts(input.participantId))
+    : null;
+  if (requiredSelection && requiredSelection.facts.length === 0) {
+    return { kind: "personal_context_unavailable", message: PERSONAL_CONTEXT_UNAVAILABLE_MESSAGE };
+  }
+  if (needsFixtureClarification(input)) {
+    return { kind: "clarification_required", question: "어떤 약속 때문에 서운한지 한 가지만 알려줄래요?" };
+  }
+  const candidates = requiredSelection
+    ? requiredFixtureCandidates(requiredSelection.facts, requiredSelection.inferenceOnly, input.indirectness)
+    : fixtureCandidatesFor(input.indirectness);
   room.replyRequests.push({
     roomId: input.roomId,
     participantId: input.participantId,
     encryptedPastedConversation: encryptJson(input.pastedConversation),
     encryptedSituation: encryptJson(input.situation),
     encryptedIntent: encryptJson(input.intent),
+    encryptedPersonalContextMode: encryptJson(input.personalContextMode),
     encryptedCandidates: candidates.map((candidate) => encryptJson(candidate)),
   });
   return { kind: "replies", candidates };
@@ -372,6 +432,7 @@ export function fixtureStoredPayloads(roomId: string): string[] {
       request.encryptedPastedConversation,
       request.encryptedSituation,
       request.encryptedIntent,
+      request.encryptedPersonalContextMode,
       ...request.encryptedCandidates,
     ]),
   ];

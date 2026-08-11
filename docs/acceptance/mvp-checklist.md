@@ -4,6 +4,9 @@
 
 - Verified source base: `e79f8d6` plus the final-blocker implementation diff described in `final-blockers-report.md`.
 - Evidence date: 2026-08-10, Asia/Seoul.
+- Required-personal-context addendum source base: `ea7a39c` plus the Task 5 implementation diff.
+- Required-personal-context addendum evidence date: 2026-08-12, Asia/Seoul.
+- The Task 5 shell exposed Node directly, so C23-C32 record the exact commands without the earlier runtime-path preamble.
 - Runtime preamble for every pnpm command: `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH` because the desktop shell did not expose `node` directly.
 - Each row names a literal command ID from the command register below. The source hash is repeated per requirement as requested; the final documentation commit cannot contain its own hash without changing that hash.
 
@@ -33,6 +36,16 @@
 | C20 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH pnpm build` | Exit 0; production compilation, type validation, static generation, and route emission completed. |
 | C21 | Fixture environment plus `pnpm start --hostname 127.0.0.1 --port 3321`, followed by `curl --fail --silent http://127.0.0.1:3321/api/health` | Outside the port-binding sandbox, Next production mode reached Ready in 243 ms and health returned `{"status":"ok"}`; the server was then stopped. |
 | C22 | `PATH=/Users/gimghoon/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' /usr/bin/perl -e '$SIG{ALRM}=sub{die "bounded E2E timeout after 180 seconds\n"}; alarm 180; exec @ARGV or die $!' pnpm playwright test tests/e2e/private-reply-flow.spec.ts tests/e2e/data-deletion.spec.ts` | Exit 0 outside the port-binding sandbox; 2/2 system-Chrome fixture tests passed in 13.3 seconds. |
+| C23 | `pnpm exec vitest run tests/unit/required-personal-context.test.ts tests/unit/personal-context-usage-validator.test.ts tests/unit/reply-evidence.test.ts tests/unit/reply-composer.test.tsx tests/unit/reply-results.test.tsx tests/unit/schema-contract.test.ts tests/unit/e2e-fixture-store.test.ts tests/integration/reply-service.test.ts tests/integration/replies-route.test.ts tests/integration/production-reply-context.test.ts tests/integration/reply-production-policy.test.ts tests/integration/private-workflow-security.test.ts` | Exit 0; 12 files, 143 tests passed. |
+| C24 | `pnpm exec vitest run tests/unit` | Exit 0; 29 files, 178 tests passed. |
+| C25 | `pnpm exec vitest run tests/integration` | Exit 0; 13 files, 149 tests passed. |
+| C26 | `pnpm exec tsc --noEmit` | Exit 0 after correcting the fixture helper to consume the shared selector's `ParticipantProfileContext[]` result. |
+| C27 | `pnpm exec drizzle-kit check --config=drizzle.config.ts` | Exit 0; Drizzle reported `Everything's fine`. |
+| C28 | `pnpm build` | Exit 0; production compilation, type validation, static generation, and route emission completed. |
+| C29 | `pnpm exec playwright test --list` | Exit 0; 2 fixture tests discovered, including the expanded private reply flow. |
+| C30 | `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' pnpm exec playwright test tests/e2e/private-reply-flow.spec.ts` | Exit 0; 1/1 system-Chrome browser test passed in 10.1 seconds. The unconfigured command could not launch because Playwright's cached Chromium executable was absent. |
+| C31 | `git diff --check` | Exit 0 with no output. |
+| C32 | `rg -n "console\.(log|debug)|selectedFacts|semantic.*explanation|raw.*model|profile.*value" src/app/api/replies src/domain/replies src/components` | Exit 0 with 11 reviewed internal/UI matches; no console logging, semantic-explanation field, raw model output, client response field, retry rule, or plaintext database column exposed private profile values. |
 
 ## Design section 11 acceptance mapping
 
@@ -67,6 +80,17 @@
 | Production start command | `tests/unit/production-start.test.ts` | C16, C20, C21 | Pass: `pnpm start --help` invokes Next production mode, the app builds, starts, becomes ready, and serves the health endpoint. | `e79f8d6` + final-blocker diff |
 | Production hybrid retrieval wiring | `tests/integration/production-reply-context.test.ts`, `tests/integration/context-repository.test.ts` | C16 | Pass: decrypted chunk summaries/turns plus participant, topic, event, nickname, relationship, and sensitive metadata populate candidates and queries; group retrieval excludes a semantically similar chunk for the wrong person. | `e79f8d6` + final-blocker diff |
 | Deletion cascades | `tests/unit/schema-contract.test.ts`, `tests/integration/room-deletion.test.ts`, `tests/e2e/data-deletion.spec.ts` | C4, C5, C6 | Pass for schema, route, and encrypted fixture-browser modes; all fixture counts reached zero. | `f5b4069` + Task 12 diff |
+
+## Required personal context mode addendum
+
+| Requirement | Evidence | Observed result | Commit hash |
+| --- | --- | --- | --- |
+| Verified facts appear in every required-mode candidate | `tests/unit/e2e-fixture-store.test.ts`, `tests/e2e/private-reply-flow.spec.ts`; C23, C30 | Pass: all three strategy-distinct fixture texts reflect a selected verified fact and display stable, non-fallback evidence. | `ea7a39c` + Task 5 diff |
+| AI-only fallback is explicit | `tests/unit/e2e-fixture-store.test.ts`, `tests/e2e/private-reply-flow.spec.ts`; C23, C30 | Pass: every AI-only candidate carries the public `unverified_profile_context` warning and the browser renders it on all three cards. | `ea7a39c` + Task 5 diff |
+| Missing eligible facts recover without persistence | `tests/unit/e2e-fixture-store.test.ts`, `tests/e2e/private-reply-flow.spec.ts`; C23, C30 | Pass: required mode returns the exact typed unavailable result before request storage; the browser shows the exact message and opens the selected empty profile via `프로필 확인하기`. | `ea7a39c` + Task 5 diff |
+| Required mode is remembered | `tests/e2e/private-reply-flow.spec.ts`; C30 | Pass: the checked state survives reload and remains enabled when changing among verified, inferred, and empty-profile participants. | `ea7a39c` + Task 5 diff |
+| Fixture storage matches the encrypted public contract | `tests/unit/e2e-fixture-store.test.ts`; C23, C32 | Pass: successful fixture requests store `personalContextMode` as an encrypted JSON payload; unavailable requests store nothing, and raw fixture payloads contain no plaintext mode value. | `ea7a39c` + Task 5 diff |
+| Normal fixture behavior is unchanged | `tests/unit/e2e-fixture-store.test.ts`; C23 | Pass: the three original texts, clarification result, indirectness warnings, and successful request count remain exact in normal mode. | `ea7a39c` + Task 5 diff |
 
 ## PostgreSQL mode and deployment gate
 
