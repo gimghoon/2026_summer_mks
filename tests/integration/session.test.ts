@@ -122,6 +122,6 @@ test("session route issues the hardened cookie and redirects after login", async
   const response = await POST(request);
 
   expect(response.status).toBe(303);
-  expect(response.headers.get("location")).toBe("https://assistant.test/");
+  expect(response.headers.get("location")).toBe("/rooms");
   expect(response.headers.get("set-cookie")).toContain("SameSite=Strict");
 });
