@@ -254,11 +254,10 @@ test.each([
     .toEqual(["REQUIRED_PERSONAL_CONTEXT_MISSING"]);
 });
 
-test("checks all three required candidates in one semantic call and retries opaquely", async () => {
+test("checks all three required candidates in one semantic call and warns weak reflection", async () => {
   const semantic = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>()
-    .mockResolvedValueOnce({ relationship_soft: true, emotion_signal: false, clearer_request: true })
-    .mockResolvedValueOnce({ relationship_soft: true, emotion_signal: true, clearer_request: true });
-  const gateway = new FakeGateway([requiredTuple(), requiredTuple()]);
+    .mockResolvedValueOnce({ relationship_soft: true, emotion_signal: false, clearer_request: true });
+  const gateway = new FakeGateway([requiredTuple()]);
   const result = await generateReplies(
     { ...command, personalContextMode: "required", indirectness: 7 },
     dependencies(gateway, {
@@ -274,15 +273,18 @@ test("checks all three required candidates in one semantic call and retries opaq
   );
 
   expect(result.kind).toBe("replies");
-  expect(semantic).toHaveBeenCalledTimes(2);
+  if (result.kind !== "replies") return;
+  expect(gateway.requests).toHaveLength(1);
+  expect(semantic).toHaveBeenCalledTimes(1);
   expect(semantic.mock.calls[0]![0]).toHaveLength(3);
-  expect(JSON.parse(gateway.requests[1]!.input).validationRuleIds)
-    .toEqual(["PERSONAL_CONTEXT_NOT_REFLECTED"]);
-  expect(JSON.stringify(JSON.parse(gateway.requests[1]!.input).validationRuleIds))
-    .not.toContain("PRIVATE_TRUSTED_VALUE");
+  expect(result.candidates.map((candidate) => candidate.warnings)).toEqual([
+    ["emotional_inference"],
+    ["emotional_inference", "personal_context_weakly_reflected"],
+    ["emotional_inference"],
+  ]);
 });
 
-test("retries a conditional use that invents an ungrounded state", async () => {
+test("warns when a conditional use invents an ungrounded state", async () => {
   const conditionalFacts = [profile({
     id: "conditional-id",
     value: "상대 상태를 단정하지 않고 질문한다",
@@ -304,11 +306,6 @@ test("retries a conditional use that invents an ungrounded state", async () => {
       "오늘 답이 늦어서 조금 아쉬웠어",
       "다음에는 늦을 때 미리 알려줘",
     ], [["conditional-id"], ["conditional-id"], ["conditional-id"]]),
-    candidates([
-      "무슨 일 있었는지 물어봐도 될까",
-      "오늘 답이 늦어서 조금 아쉬웠어",
-      "다음에는 늦을 때 미리 알려줘",
-    ], [["conditional-id"], ["conditional-id"], ["conditional-id"]]),
   ]);
 
   const result = await generateReplies(
@@ -326,7 +323,9 @@ test("retries a conditional use that invents an ungrounded state", async () => {
   );
 
   expect(result.kind).toBe("replies");
-  expect(semantic).toHaveBeenCalledTimes(2);
+  if (result.kind !== "replies") return;
+  expect(gateway.requests).toHaveLength(1);
+  expect(semantic).toHaveBeenCalledTimes(1);
   expect(semantic.mock.calls[0]![1]).toEqual({
     situation: command.situation,
     intent: command.intent,
@@ -335,8 +334,11 @@ test("retries a conditional use that invents an ungrounded state", async () => {
       messages: [{ kind: "text", text: "오늘 답이 늦어서 미안해" }],
     }],
   });
-  expect(JSON.parse(gateway.requests[1]!.input).validationRuleIds)
-    .toEqual(["PERSONAL_CONTEXT_NOT_REFLECTED"]);
+  expect(result.candidates.map((candidate) => candidate.warnings)).toEqual([
+    ["personal_context_weakly_reflected"],
+    [],
+    [],
+  ]);
 });
 
 test("accepts a conditional use when the selected current situation grounds it", async () => {
@@ -464,31 +466,71 @@ test("adds an inference warning to every candidate when required selection is in
   ]);
 });
 
-test("fails closed after a second semantic failure without leaking profile facts or rejected text", async () => {
-  const rejectedText = "PRIVATE_REJECTED_SEMANTIC_TEXT";
-  const gateway = new FakeGateway([
-    candidates([rejectedText, "기다리면서 조금 아쉬웠어", "늦을 때는 미리 알려줘"], [["trusted-id"], ["trusted-id"], ["trusted-id"]]),
-    candidates([rejectedText, "기다리면서 조금 아쉬웠어", "늦을 때는 미리 알려줘"], [["trusted-id"], ["trusted-id"], ["trusted-id"]]),
-  ]);
-  const semantic = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>(async () => ({ relationship_soft: false, emotion_signal: true, clearer_request: true }));
+test("returns candidate-aligned warnings without retrying weak semantic reflection", async () => {
+  const gateway = new FakeGateway([requiredTuple()]);
+  const semantic = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>(
+    async () => ({
+      relationship_soft: false,
+      emotion_signal: true,
+      clearer_request: false,
+    }),
+  );
 
-  try {
-    await generateReplies({ ...command, personalContextMode: "required" }, dependencies(gateway, {
+  const result = await generateReplies(
+    { ...command, personalContextMode: "required" },
+    dependencies(gateway, {
       contextProvider: {
         loadParticipantProfiles: async () => trustedFacts,
-        load: async (_command, preloadedProfiles) => ({ ...context, participantProfiles: preloadedProfiles ?? trustedFacts }),
+        load: async (_command, preloadedProfiles) => ({
+          ...context,
+          participantProfiles: preloadedProfiles ?? trustedFacts,
+        }),
       },
       personalContextUsageValidator: semantic,
-    }));
-    expect.unreachable("the second semantic failure must reject");
-  } catch (error) {
-    expect(error).toMatchObject({ ruleIds: ["PERSONAL_CONTEXT_NOT_REFLECTED"] });
-    expect(String(error)).not.toContain("PRIVATE_TRUSTED_VALUE");
-    expect(String(error)).not.toContain(rejectedText);
-  }
-  const retryRules = JSON.stringify(JSON.parse(gateway.requests[1]!.input).validationRuleIds);
-  expect(retryRules).not.toContain("PRIVATE_TRUSTED_VALUE");
-  expect(retryRules).not.toContain(rejectedText);
+    }),
+  );
+
+  expect(result.kind).toBe("replies");
+  if (result.kind !== "replies") return;
+  expect(gateway.requests).toHaveLength(1);
+  expect(semantic).toHaveBeenCalledTimes(1);
+  expect(result.candidates.map((candidate) => candidate.warnings)).toEqual([
+    ["personal_context_weakly_reflected"],
+    [],
+    ["personal_context_weakly_reflected"],
+  ]);
+});
+
+test("returns unverified warnings when semantic personal-context validation fails", async () => {
+  const privateFailure = "PRIVATE_VALIDATOR_PAYLOAD";
+  const gateway = new FakeGateway([requiredTuple()]);
+  const semantic = vi.fn<ReplyServiceDependencies["personalContextUsageValidator"]>(
+    async () => { throw new Error(privateFailure); },
+  );
+
+  const result = await generateReplies(
+    { ...command, personalContextMode: "required" },
+    dependencies(gateway, {
+      contextProvider: {
+        loadParticipantProfiles: async () => trustedFacts,
+        load: async (_command, preloadedProfiles) => ({
+          ...context,
+          participantProfiles: preloadedProfiles ?? trustedFacts,
+        }),
+      },
+      personalContextUsageValidator: semantic,
+    }),
+  );
+
+  expect(result.kind).toBe("replies");
+  if (result.kind !== "replies") return;
+  expect(gateway.requests).toHaveLength(1);
+  expect(result.candidates.map((candidate) => candidate.warnings)).toEqual([
+    ["personal_context_reflection_unverified"],
+    ["personal_context_reflection_unverified"],
+    ["personal_context_reflection_unverified"],
+  ]);
+  expect(JSON.stringify(result)).not.toContain(privateFailure);
 });
 
 test("normal mode neither calls semantic validation nor adds inference warnings", async () => {

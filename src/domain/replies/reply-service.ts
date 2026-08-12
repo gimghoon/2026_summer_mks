@@ -42,7 +42,9 @@ export type ReplyWarning =
   | "specific_fact_inference"
   | "profile_conflict"
   | "important_intent_ambiguity"
-  | "unverified_profile_context";
+  | "unverified_profile_context"
+  | "personal_context_weakly_reflected"
+  | "personal_context_reflection_unverified";
 
 export type ReplyCandidateContent = {
   strategy: ReplyStrategy;
@@ -546,6 +548,11 @@ export class ReplyService {
     let validationRuleIds: ReplyValidationRuleId[] = [];
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      let personalContextWarnings: [ReplyWarning[], ReplyWarning[], ReplyWarning[]] = [
+        [],
+        [],
+        [],
+      ];
       let generated: GeneratedReply;
       try {
         generated = await this.dependencies.gateway.extract({
@@ -600,18 +607,26 @@ export class ReplyService {
           if (attempt === 0) continue;
           throw new ReplyGenerationValidationError(validationRuleIds);
         }
-        const reflected = await this.dependencies.personalContextUsageValidator(
-          semanticUsageCandidates([
-            generated.candidates[0]!,
-            generated.candidates[1]!,
-            generated.candidates[2]!,
-          ], evidenceProfiles),
-          semanticUsageGrounding(command, validationContext),
-        );
-        if (generated.candidates.some((candidate) => !reflected[candidate.strategy])) {
-          validationRuleIds = ["PERSONAL_CONTEXT_NOT_REFLECTED"];
-          if (attempt === 0) continue;
-          throw new ReplyGenerationValidationError(validationRuleIds);
+        try {
+          const reflected = await this.dependencies.personalContextUsageValidator(
+            semanticUsageCandidates([
+              generated.candidates[0]!,
+              generated.candidates[1]!,
+              generated.candidates[2]!,
+            ], evidenceProfiles),
+            semanticUsageGrounding(command, validationContext),
+          );
+          personalContextWarnings = generated.candidates.map((candidate) => (
+            reflected[candidate.strategy]
+              ? []
+              : ["personal_context_weakly_reflected" as const]
+          )) as [ReplyWarning[], ReplyWarning[], ReplyWarning[]];
+        } catch {
+          personalContextWarnings = [
+            ["personal_context_reflection_unverified"],
+            ["personal_context_reflection_unverified"],
+            ["personal_context_reflection_unverified"],
+          ];
         }
       }
       if (command.indirectness >= 6) {
@@ -623,6 +638,7 @@ export class ReplyService {
               "emotional_inference",
               ...candidateValidationResults[0]!.ruleIds.map(warningForRule),
               ...unverifiedProfileWarning(generated.candidates[0]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+              ...personalContextWarnings[0],
             ],
           ),
           withPublicCandidateMetadata(
@@ -632,6 +648,7 @@ export class ReplyService {
               "emotional_inference",
               ...candidateValidationResults[1]!.ruleIds.map(warningForRule),
               ...unverifiedProfileWarning(generated.candidates[1]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+              ...personalContextWarnings[1],
             ],
           ),
           withPublicCandidateMetadata(
@@ -641,6 +658,7 @@ export class ReplyService {
               "emotional_inference",
               ...candidateValidationResults[2]!.ruleIds.map(warningForRule),
               ...unverifiedProfileWarning(generated.candidates[2]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+              ...personalContextWarnings[2],
             ],
           ),
         ];
@@ -652,17 +670,26 @@ export class ReplyService {
           withPublicCandidateMetadata(
             generated.candidates[0]!,
             personalContextEvidence,
-            unverifiedProfileWarning(generated.candidates[0]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+            [
+              ...unverifiedProfileWarning(generated.candidates[0]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+              ...personalContextWarnings[0],
+            ],
           ),
           withPublicCandidateMetadata(
             generated.candidates[1]!,
             personalContextEvidence,
-            unverifiedProfileWarning(generated.candidates[1]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+            [
+              ...unverifiedProfileWarning(generated.candidates[1]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+              ...personalContextWarnings[1],
+            ],
           ),
           withPublicCandidateMetadata(
             generated.candidates[2]!,
             personalContextEvidence,
-            unverifiedProfileWarning(generated.candidates[2]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+            [
+              ...unverifiedProfileWarning(generated.candidates[2]!, requiredSelection?.inferenceOnly ?? false, evidenceProfiles),
+              ...personalContextWarnings[2],
+            ],
           ),
         ];
         return { kind: "replies", candidates };
