@@ -8,7 +8,7 @@
 
 ## TDD evidence
 
-- RED: Not observed during Task 3 validation; the focused suite was first run after Tasks 1 and 2 were committed, and no failing-test transcript was present in those commits.
+- RED: `pnpm exec vitest run tests/integration/reply-service.test.ts` failed before Task 1's implementation because weak semantic reflection retried and semantic-validator exceptions escaped. `pnpm exec vitest run tests/unit/reply-results.test.tsx` failed before Task 2's implementation because the first advisory label was absent from `warningLabels`.
 - GREEN: `pnpm exec vitest run tests/integration/reply-service.test.ts tests/unit/reply-results.test.tsx tests/integration/replies-route.test.ts` — 3 test files passed, 82 tests passed (exit 0).
 
 ## Final verification
