@@ -38,6 +38,20 @@ test("shows the exact notice for AI-inferred personal context", () => {
   )).toBeVisible();
 });
 
+test("shows advisory personal-context reflection notices", () => {
+  render(<ReplyResults candidates={[
+    { ...candidates[0], warnings: ["personal_context_weakly_reflected"] },
+    { ...candidates[1], warnings: ["personal_context_reflection_unverified"] },
+  ]} />);
+
+  expect(screen.getByText(
+    "개인 컨텍스트가 약하게 반영됐을 수 있어요.",
+  )).toBeVisible();
+  expect(screen.getByText(
+    "개인 컨텍스트 반영 여부를 확인하지 못했어요.",
+  )).toBeVisible();
+});
+
 test("limits context basis and deduplicates warning badges", () => {
   render(<ReplyResults candidates={[{
     ...candidates[0],
