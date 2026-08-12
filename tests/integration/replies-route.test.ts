@@ -89,6 +89,30 @@ test("accepts required personal context mode and persists it", async () => {
   }));
 });
 
+test("passes personal-context advisory warnings unchanged to persistence", async () => {
+  const warningCandidates: [ReplyCandidate, ReplyCandidate, ReplyCandidate] = [
+    { ...candidates[0], warnings: ["personal_context_weakly_reflected"] },
+    { ...candidates[1], warnings: ["personal_context_reflection_unverified"] },
+    candidates[2],
+  ];
+  const deps = dependencies({
+    generate: vi.fn(async () => ({
+      kind: "replies" as const,
+      candidates: warningCandidates,
+    })),
+  });
+
+  const response = await createReplyPostHandler(deps)(request(validBody({
+    personalContextMode: "required",
+  })));
+
+  expect(response.status).toBe(200);
+  expect(deps.persist).toHaveBeenCalledWith(expect.objectContaining({
+    candidates: warningCandidates,
+  }));
+  expect(deps.log).not.toHaveBeenCalled();
+});
+
 test("rejects an unknown personal context mode", async () => {
   const deps = dependencies();
 

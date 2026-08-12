@@ -15,6 +15,8 @@ const warningLabels: Record<ReplyWarning, string> = {
   profile_conflict: "프로필과 다를 수 있음",
   important_intent_ambiguity: "중요 의도 불명확",
   unverified_profile_context: "AI가 추정한 개인 컨텍스트를 사용했어요. 실제 성향과 맞는지 확인해 주세요.",
+  personal_context_weakly_reflected: "개인 컨텍스트가 약하게 반영됐을 수 있어요.",
+  personal_context_reflection_unverified: "개인 컨텍스트 반영 여부를 확인하지 못했어요.",
 };
 
 export function ReplyResults({ candidates, clarification, onRetry }: { candidates?: ReplyCandidate[]; clarification?: string; onRetry?: (answer: string) => void }) {
